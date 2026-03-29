@@ -1,0 +1,14 @@
+# Security - NEVER commit real credentials
+transit-stop-board/config.h
+config.h
+secrets.h
+credentials.h
+
+# Build files
+.pio
+build/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

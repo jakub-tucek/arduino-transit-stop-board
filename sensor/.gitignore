@@ -1,0 +1,12 @@
+# PlatformIO
+.pio/
+.vscode/
+
+# Config file with sensitive data
+config.h
+
+# Build artifacts
+*.elf
+*.bin
+*.hex
+*.map

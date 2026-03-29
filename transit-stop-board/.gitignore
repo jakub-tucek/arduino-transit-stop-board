@@ -1,0 +1,17 @@
+# Secret config with credentials - DO NOT COMMIT
+include/config.h
+
+# PlatformIO build files
+.pio
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
