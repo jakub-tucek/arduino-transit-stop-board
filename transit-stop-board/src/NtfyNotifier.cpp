@@ -1,5 +1,16 @@
 #include "NtfyNotifier.h"
 
+namespace {
+String formatClockTime(time_t timestamp) {
+  struct tm timeInfo;
+  localtime_r(&timestamp, &timeInfo);
+
+  char buffer[6];
+  strftime(buffer, sizeof(buffer), "%H:%M", &timeInfo);
+  return String(buffer);
+}
+}
+
 NtfyNotifier::NtfyNotifier(const char* serverUrl, const char* topic) 
   : serverUrl(serverUrl), topic(topic), enabled(false) {
   memset(&watched, 0, sizeof(watched));
@@ -125,36 +136,36 @@ void NtfyNotifier::notifyError(NotificationType type, const char* details) {
   
   switch (type) {
     case NotificationType::ERROR_WIFI:
-      title = "WiFi Disconnected";
+      title = "WiFi odpojena";
       tags = "wifi,warning";
       break;
     case NotificationType::ERROR_API:
-      title = "API Error";
+      title = "Chyba API";
       tags = "api,warning";
       break;
     case NotificationType::ERROR_GENERIC:
-      title = "Transit Board Error";
+      title = "Chyba panelu";
       tags = "error";
       break;
     default:
-      title = "Notification";
+      title = "Upozorneni";
   }
   
-  String message = details ? String(details) : "An error occurred on the transit board";
+  String message = details ? String(details) : "Na panelu odjezdu doslo k chybe";
   sendNotification(title, message.c_str(), priority, tags);
 }
 
 void NtfyNotifier::notifyWiFiDisconnected() {
-  notifyError(NotificationType::ERROR_WIFI, "WiFi connection lost. Attempting to reconnect...");
+  notifyError(NotificationType::ERROR_WIFI, "WiFi se odpojila. Zkousim obnovit pripojeni...");
 }
 
 void NtfyNotifier::notifyWiFiReconnected() {
   if (!enabled) return;
-  sendNotification("WiFi Reconnected", "Transit board back online", "low", "wifi");
+  sendNotification("WiFi obnovena", "Panel odjezdu je znovu online", "low", "wifi");
 }
 
 void NtfyNotifier::notifyApiError(int httpCode) {
-  String msg = "API request failed with HTTP code: " + String(httpCode);
+  String msg = "API pozadavek selhal, HTTP kod: " + String(httpCode);
   notifyError(NotificationType::ERROR_API, msg.c_str());
 }
 
@@ -180,15 +191,13 @@ bool NtfyNotifier::startWatching(const Departure& departure, time_t departureTim
   }
   
   // Send confirmation
-  String title = "Watching " + watched.line + " to " + watched.headsign;
-  String timeStr = String(ctime(&departureTime));
-  timeStr.trim(); // Remove newline from ctime
-  String message = "Departure at " + timeStr;
+  String title = "Sleduji " + watched.line + " smer " + watched.headsign;
+  String message = "Odjezd v " + formatClockTime(departureTime);
   if (departure.delaySeconds > 0) {
-    message += " (delayed " + String(departure.delaySeconds / 60) + " min)";
+    message += " (zpozdeni " + String(departure.delaySeconds / 60) + " min)";
   }
   if (!watched.stopName.isEmpty()) {
-    message += " | Stop: " + watched.stopName;
+    message += " | Zastavka: " + watched.stopName;
   }
   
   sendNotification(title.c_str(), message.c_str(), "default", "bus,eye");
@@ -201,8 +210,8 @@ bool NtfyNotifier::startWatching(const Departure& departure, time_t departureTim
 void NtfyNotifier::stopWatching() {
   if (!watched.active) return;
   
-  String title = "Stopped watching " + watched.line;
-  String message = "No longer monitoring " + watched.line + " to " + watched.headsign;
+  String title = "Konec sledovani " + watched.line;
+  String message = "Uz nesleduji " + watched.line + " smer " + watched.headsign;
   sendNotification(title.c_str(), message.c_str(), "low", "bus,cancel");
   
   watched.active = false;
@@ -224,18 +233,18 @@ int NtfyNotifier::calculateMinutesUntil(time_t now) const {
 }
 
 void NtfyNotifier::sendThresholdNotification(int threshold, int minutesUntil, int delayMinutes) {
-  String title = watched.line + " to " + watched.headsign;
+  String title = watched.line + " smer " + watched.headsign;
   
   String message;
   if (delayMinutes > 0) {
-    message = String(minutesUntil) + " min until departure (delayed " + 
+    message = "Odjezd za " + String(minutesUntil) + " min (zpozdeni " + 
               String(delayMinutes) + " min)";
   } else {
-    message = String(minutesUntil) + " min until departure";
+    message = "Odjezd za " + String(minutesUntil) + " min";
   }
   
   if (!watched.stopName.isEmpty()) {
-    message += " | Stop: " + watched.stopName;
+    message += " | Zastavka: " + watched.stopName;
   }
   
   const char* priority = (threshold <= 15) ? "high" : "default";
@@ -244,19 +253,19 @@ void NtfyNotifier::sendThresholdNotification(int threshold, int minutesUntil, in
 }
 
 void NtfyNotifier::sendDelayUpdateNotification(int oldDelayMinutes, int newDelayMinutes) {
-  String title = "Delay Update: " + watched.line;
+  String title = "Zmena zpozdeni: " + watched.line;
   
   String message;
   if (newDelayMinutes > oldDelayMinutes) {
-    message = "Delay increased from " + String(oldDelayMinutes) + 
-              " to " + String(newDelayMinutes) + " minutes";
+    message = "Zpozdeni vzrostlo z " + String(oldDelayMinutes) + 
+              " na " + String(newDelayMinutes) + " min";
   } else {
-    message = "Delay decreased from " + String(oldDelayMinutes) + 
-              " to " + String(newDelayMinutes) + " minutes";
+    message = "Zpozdeni kleslo z " + String(oldDelayMinutes) + 
+              " na " + String(newDelayMinutes) + " min";
   }
   
   int minutesUntil = calculateMinutesUntil(time(nullptr));
-  message += " (departure in " + String(minutesUntil) + " min)";
+  message += " (odjezd za " + String(minutesUntil) + " min)";
   
   const char* priority = (newDelayMinutes > oldDelayMinutes) ? "high" : "default";
   

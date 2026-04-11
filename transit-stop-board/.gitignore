@@ -1,5 +1,6 @@
 # Secret config with credentials - DO NOT COMMIT
 include/config.h
+config2.h
 
 # PlatformIO build files
 .pio

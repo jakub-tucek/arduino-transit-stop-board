@@ -7,6 +7,11 @@
 // Golemio API token (get at https://api.golemio.cz/)
 #define GOLEMIO_TOKEN "your_token_here"
 
+// Optional ntfy.sh notifications configuration
+// Omit these defines entirely or leave NTFY_TOPIC empty to disable notifications
+// #define NTFY_SERVER "https://ntfy.sh"
+// #define NTFY_TOPIC "your_topic_here"
+
 // Custom time server (set to empty string "" to use NTP instead)
 #define TIME_SERVER_URL ""
 
@@ -25,27 +30,31 @@ struct StopConfig {
   int cisId;                  // CIS stop ID (use if available, 0 otherwise)
   const char* aswId;          // ASW stop ID format: "nodeId_stopId" (use if cisId is 0)
   int routeType;              // Route type (-1 for any)
-  StopRoute routes[2];        // Primary and fallback routes
+  StopRoute routes[2];        // Optional primary and fallback route filters
 };
 
 constexpr StopConfig STOPS[] = {
   {
-    .label = "Andel",
-    .cisId = 58759,  // Example CIS ID for Anděl
+    .label = "Stop A",
+    .cisId = 123,
     .aswId = "",
-    .routeType = -1,  // Any type
+    .routeType = 3,  // Bus
     .routes = {
-      { .line = "B", .headsignMatch = "Zlicin", .headsignDisplay = "Zličín" },
+      // Example: leave filters empty to show all departures for this stop.
+      // Leave filters empty to show all bus departures for this stop.
+      { .line = "", .headsignMatch = "", .headsignDisplay = "" },
       { .line = "", .headsignMatch = "", .headsignDisplay = "" }
     }
   },
   {
-    .label = "Na Knizeci",
-    .cisId = 0,
-    .aswId = "1040_1",  // Example ASW ID
+    .label = "Stop B",
+    .cisId = 456,
+    .aswId = "",
     .routeType = 3,  // Bus
     .routes = {
-      { .line = "197", .headsignMatch = "", .headsignDisplay = "Chodov" },
+      // Example stop with multiple lines/platforms.
+      // Leave filters empty to show all bus departures for this stop.
+      { .line = "", .headsignMatch = "", .headsignDisplay = "" },
       { .line = "", .headsignMatch = "", .headsignDisplay = "" }
     }
   }

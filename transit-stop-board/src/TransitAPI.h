@@ -32,5 +32,7 @@ private:
   static String normalizeText(const String& input);
   static bool headsignMatches(const String& headsign, const char* expected);
   static bool routeMatches(const String& line, const char* expectedLine);
+  static bool hasRouteFilter(const StopRoute& route);
+  static bool stopUsesRouteFilters(const StopConfig& stop);
   static bool matchesRoute(const Departure& item, const StopRoute& route);
 };

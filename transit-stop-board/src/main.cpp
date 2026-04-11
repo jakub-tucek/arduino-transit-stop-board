@@ -8,11 +8,22 @@
 #include "BoardSetup.h"
 #include "NtfyNotifier.h"
 
+#ifndef NTFY_SERVER
+#define NTFY_SERVER ""
+#endif
+
+#ifndef NTFY_TOPIC
+#define NTFY_TOPIC ""
+#endif
+
 // Use config from config.h
-static const int MAX_DEPARTURES = 48;  // Buffer for 42 API results + margin
+static const int MAX_DEPARTURES = 96;
 static const unsigned long FETCH_INTERVAL_MS = 60000UL; // 1 minute
 static const unsigned long NTFY_UPDATE_INTERVAL_MS = 60000UL; // 1 minute
 static const int ROWS_PER_PAGE = 7;
+static const int INITIAL_MINUTES_AFTER = 180;
+static const int LOAD_MORE_MINUTES_STEP = 180;
+static const int MAX_MINUTES_AFTER = 4320;
 
 // Global objects
 DisplayManager display;
@@ -43,6 +54,10 @@ int getTotalPages() {
   return (departureCount + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 }
 
+bool canLoadMoreDepartures() {
+  return api.getMinutesAfter() < MAX_MINUTES_AFTER;
+}
+
 void renderScreen(bool isLoading = false) {
   // Calculate absolute watched index based on page
   int watchedAbsIndex = -1;
@@ -56,7 +71,7 @@ void renderScreen(bool isLoading = false) {
   
   ui.render(departures, departureCount, STOPS[currentStopIndex],
             currentPage, getTotalPages(), boardSetup.isWiFiConnected(), 
-            departureCount > 0, watchedAbsIndex, isLoading);
+            departureCount > 0, watchedAbsIndex, isLoading, canLoadMoreDepartures());
   
   // Show modal if pending
   if (modalShowing && modalPendingRow >= 0) {
@@ -146,6 +161,11 @@ void confirmWatchAction() {
 }
 
 void handleWatchSelect(int rowIndex) {
+  if (!notifier.isEnabled()) {
+    Serial.println("[MAIN] Watch selection ignored: ntfy disabled");
+    return;
+  }
+
   int absIndex = (currentPage - 1) * ROWS_PER_PAGE + rowIndex;
   
   if (absIndex < 0 || absIndex >= departureCount) return;
@@ -163,21 +183,28 @@ void handleWatchSelect(int rowIndex) {
   renderScreen();
 }
 
-void fetchDepartures() {
+void fetchDepartures(bool resetToFirstPage = true) {
   if (!boardSetup.isWiFiConnected()) {
     Serial.println("[MAIN] Cannot fetch - WiFi not connected");
     return;
   }
 
+  String watchedTripId = "";
+  if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
+    watchedTripId = departures[watchedDepartureIndex].tripId;
+  }
+
   departureCount = api.fetchDepartures(STOPS[currentStopIndex], departures, MAX_DEPARTURES);
   
-  // Reset to first page on new data
-  currentPage = 1;
+  if (resetToFirstPage) {
+    currentPage = 1;
+  } else {
+    currentPage = min(currentPage, getTotalPages());
+  }
   lastFetchMs = millis();
   
   // If watching, try to refresh the watched departure data
-  if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
-    const String& watchedTripId = departures[watchedDepartureIndex].tripId;
+  if (watchedTripId.length() > 0) {
     bool found = false;
     
     // Search for the same trip in new data
@@ -202,6 +229,29 @@ void fetchDepartures() {
   Serial.println(" departures");
 }
 
+void loadMoreDepartures() {
+  if (!canLoadMoreDepartures()) {
+    return;
+  }
+
+  int previousPage = currentPage;
+  int previousCount = departureCount;
+  int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
+  api.setMinutesAfter(nextMinutesAfter);
+
+  Serial.print("[MAIN] Expanding fetch window to ");
+  Serial.print(nextMinutesAfter);
+  Serial.println(" minutes");
+
+  fetchDepartures(false);
+
+  if (departureCount > previousCount) {
+    currentPage = min(previousPage + 1, getTotalPages());
+  } else {
+    currentPage = min(previousPage, getTotalPages());
+  }
+}
+
 void handleAction(TouchAction action) {
   switch (action) {
     case TouchAction::PREV_PAGE:
@@ -212,11 +262,16 @@ void handleAction(TouchAction action) {
     case TouchAction::NEXT_PAGE:
       if (currentPage < getTotalPages()) {
         currentPage++;
+      } else if (departureCount > 0 && canLoadMoreDepartures()) {
+        renderScreen(true);
+        delay(100);
+        loadMoreDepartures();
       }
       break;
     case TouchAction::SWITCH_STOP:
       currentStopIndex = (currentStopIndex + 1) % STOP_COUNT;
       currentPage = 1;
+      api.setMinutesAfter(INITIAL_MINUTES_AFTER);
       // Show loading indicator while fetching
       renderScreen(true);
       delay(100);
@@ -288,8 +343,10 @@ void handleTouch() {
   // Flash button for visual feedback
   if (action == TouchAction::PREV_PAGE) {
     ui.flashButton(0);
-  } else if (action == TouchAction::NEXT_PAGE) {
+  } else if (action == TouchAction::SWITCH_STOP) {
     ui.flashButton(1);
+  } else if (action == TouchAction::NEXT_PAGE) {
+    ui.flashButton(2);
   }
   
   handleAction(action);
@@ -334,7 +391,7 @@ void checkSerialInput() {
     }
     case 'w': case 'W': {
       // Debug: watch first departure
-      if (departureCount > 0) {
+      if (notifier.isEnabled() && departureCount > 0) {
         startWatching(0);
         renderScreen();
       }
@@ -364,6 +421,7 @@ void setup() {
   // Initialize board setup (WiFi + Time)
   boardSetup.begin();
   notifier.begin();
+  api.setMinutesAfter(INITIAL_MINUTES_AFTER);
   
   // Wait for WiFi with animation
   int wifiAttempt = 0;

@@ -56,8 +56,9 @@ The config contains:
 
 - Wi-Fi SSID and password
 - Golemio token
+- optional `ntfy.sh` notification settings
 - stop labels and encoded stop names
-- primary and fallback target headsigns for filtering
+- optional route/headsign filters per stop; if omitted, all departures for that `routeType` are shown
 
 ## Wiring Example
 

@@ -101,16 +101,22 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   // Status text - show platform or delay
   String statusText = item.platform.length() ? item.platform : "";
   uint16_t statusColor = DisplayManager::DIM;
+  uint8_t statusSize = 1;
+  int statusX = 280;
   
   // Show delay if present (positive delay = late, negative = early)
   if (item.delaySeconds > 60) {
     int delayMins = item.delaySeconds / 60;
     statusText = "+" + String(delayMins);
     statusColor = DisplayManager::ERR;  // Red for delay
+    statusSize = 2;
+    statusX = 256;
   } else if (item.delaySeconds < -30) {
     int earlyMins = abs(item.delaySeconds) / 60;
     statusText = "-" + String(earlyMins);
     statusColor = DisplayManager::OK;  // Green for early
+    statusSize = 2;
+    statusX = 256;
   }
 
   display.fillRect(0, y, DisplayManager::WIDTH, ROW_HEIGHT - 1, rowBg);
@@ -118,8 +124,8 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   // Line number
   display.drawText(6, y + 5, trimToLength(item.line, 5), DisplayManager::WARN, 2);
   
-  // Destination
-  display.drawText(50, y + 6, trimToLength(item.headsign, 16), DisplayManager::TEXT, 1);
+  // Destination uses the larger font, so keep it slightly shorter to preserve spacing.
+  display.drawText(50, y + 4, trimToLength(item.headsign, 12), DisplayManager::TEXT, 2);
   
   // Minutes until departure or departure time for far departures
   String displayStr;
@@ -147,7 +153,7 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   
   // Status/platform (far right)
   if (statusText.length() > 0 && !isWatched) {
-    display.drawText(280, y + 6, trimToLength(statusText, 6), statusColor, 1);
+    display.drawText(statusX, y + 5, trimToLength(statusText, 6), statusColor, statusSize);
   }
   
   // Draw watched indicator
@@ -165,7 +171,7 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
   if (isLoading) {
     // Show loading message with spinner
     display.fillRoundRect(10, 70, DisplayManager::WIDTH - 20, 80, 8, DisplayManager::PANEL);
-    display.drawText(100, 95, "Loading...", DisplayManager::TEXT, 2);
+    display.drawText(100, 95, "Nacitam...", DisplayManager::TEXT, 2);
     static int spinnerFrame = 0;
     drawSpinner(200, 105, spinnerFrame++, DisplayManager::LINE);
     if (spinnerFrame > 7) spinnerFrame = 0;
@@ -175,7 +181,7 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
 
   if (count == 0) {
     display.fillRoundRect(10, 70, DisplayManager::WIDTH - 20, 80, 8, DisplayManager::PANEL);
-    display.drawText(28, 95, "No departures", DisplayManager::TEXT, 2);
+    display.drawText(28, 95, "Zadne odjezdy", DisplayManager::TEXT, 2);
     Serial.println("No departures.");
     return;
   }
@@ -216,11 +222,11 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
   Serial.println((count + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
 }
 
-void UIManager::drawButtons(int currentPage, int totalPages, int departureCount) {
+void UIManager::drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore) {
   bool hasPrevPage = currentPage > 1;
-  bool hasNextPage = currentPage < totalPages;
+  bool hasNextPage = currentPage < totalPages || (departureCount > 0 && canLoadMore);
 
-  const int BUTTON_COUNT = 2;
+  const int BUTTON_COUNT = 3;
   const int buttonWidth = DisplayManager::WIDTH / BUTTON_COUNT;
 
   // Previous page button
@@ -230,25 +236,27 @@ void UIManager::drawButtons(int currentPage, int totalPages, int departureCount)
   int h1 = DisplayManager::FOOTER_H - 8;
   display.fillRoundRect(x1, y1, w1, h1, 6, hasPrevPage ? DisplayManager::BUTTON_ACTIVE : DisplayManager::BUTTON);
   display.drawRoundRect(x1, y1, w1, h1, 6, DisplayManager::TEXT);
-  display.drawText(x1 + 15, y1 + 10, "PREVIOUS", DisplayManager::TEXT, 2);
+  display.drawText(x1 + 40, y1 + 8, "<", DisplayManager::TEXT, 3);
+
+  // Stop switch button
+  int x2 = 1 * buttonWidth + 2;
+  display.fillRoundRect(x2, y1, w1, h1, 6, DisplayManager::WARN);
+  display.drawRoundRect(x2, y1, w1, h1, 6, DisplayManager::TEXT);
+  display.drawText(x2 + 20, y1 + 3, "ZMENA", DisplayManager::HEADER, 1);
+  display.drawText(x2 + 12, y1 + 18, "STANICE", DisplayManager::HEADER, 2);
 
   // Next page button
-  int x2 = 1 * buttonWidth + 2;
-  display.fillRoundRect(x2, y1, w1, h1, 6, hasNextPage ? DisplayManager::BUTTON_ACTIVE : DisplayManager::BUTTON);
-  display.drawRoundRect(x2, y1, w1, h1, 6, DisplayManager::TEXT);
-  display.drawText(x2 + 45, y1 + 10, "NEXT", DisplayManager::TEXT, 2);
-
-  // Page indicator
-  String pageInfo = String(currentPage) + "/" + String(totalPages);
-  display.drawText(150, DisplayManager::HEIGHT - DisplayManager::FOOTER_H + 15, 
-                   pageInfo, DisplayManager::DIM, 1);
+  int x3 = 2 * buttonWidth + 2;
+  display.fillRoundRect(x3, y1, w1, h1, 6, hasNextPage ? DisplayManager::BUTTON_ACTIVE : DisplayManager::BUTTON);
+  display.drawRoundRect(x3, y1, w1, h1, 6, DisplayManager::TEXT);
+  display.drawText(x3 + 40, y1 + 8, ">", DisplayManager::TEXT, 3);
 
   Serial.println("----------------------------------------");
   Serial.print("Page: ");
   Serial.print(currentPage);
   Serial.print("/");
   Serial.println(totalPages);
-  Serial.println("Serial debug: [P]PREV [N]NEXT [H]NEXT STOP");
+  Serial.println("Serial debug: [P]PREV [H]NEXT STOP [N]NEXT");
   Serial.println("Tap row to watch/unwatch");
   Serial.println("========================================");
 }
@@ -281,17 +289,17 @@ void UIManager::drawModal(const char* title, const char* line1, const char* line
 
 void UIManager::showWatchModal(const Departure& departure) {
   modalShowing = true;
-  String title = "Watch " + departure.line + "?";
-  String line1 = "To: " + trimToLength(departure.headsign, 22);
-  String line2 = "In: " + departure.minutes + " min";
+  String title = "Sledovat " + departure.line + "?";
+  String line1 = "Smer: " + trimToLength(departure.headsign, 22);
+  String line2 = "Za: " + departure.minutes + " min";
   drawModal(title.c_str(), line1.c_str(), line2.c_str(), DisplayManager::OK);
 }
 
 void UIManager::showUnwatchModal(const Departure& departure) {
   modalShowing = true;
-  String title = "Stop watching?";
-  String line1 = departure.line + " to " + trimToLength(departure.headsign, 18);
-  String line2 = "Tap again to cancel";
+  String title = "Zrusit sledovani?";
+  String line1 = departure.line + " smer " + trimToLength(departure.headsign, 16);
+  String line2 = "Potvrd zruseni";
   drawModal(title.c_str(), line1.c_str(), line2.c_str(), DisplayManager::ERR);
 }
 
@@ -300,7 +308,7 @@ void UIManager::hideModal() {
 }
 
 void UIManager::flashButton(int buttonIndex) {
-  const int BUTTON_COUNT = 2;
+  const int BUTTON_COUNT = 3;
   const int buttonWidth = DisplayManager::WIDTH / BUTTON_COUNT;
   int x = buttonIndex * buttonWidth + 2;
   int y = DisplayManager::HEIGHT - DisplayManager::FOOTER_H + 4;
@@ -316,43 +324,44 @@ void UIManager::flashButton(int buttonIndex) {
 
 void UIManager::render(const Departure* departures, int count, 
                        const StopConfig& currentStop, int currentPage, int totalPages,
-                       bool wifiOk, bool dataOk, int watchedIndex, bool isLoading) {
+                       bool wifiOk, bool dataOk, int watchedIndex, bool isLoading,
+                       bool canLoadMore) {
   clear();
   drawHeader(currentStop, wifiOk, dataOk, isLoading);
   drawStopBar();
   drawDepartures(departures, count, (currentPage - 1) * ROWS_PER_PAGE, watchedIndex, isLoading);
-  drawButtons(currentPage, totalPages, count);
+  drawButtons(currentPage, totalPages, count, canLoadMore);
 }
 
 void UIManager::drawModalButtons() {
-  const int BUTTON_COUNT = 2;
+  const int BUTTON_COUNT = 3;
   const int buttonWidth = DisplayManager::WIDTH / BUTTON_COUNT;
   int y = DisplayManager::HEIGHT - DisplayManager::FOOTER_H + 4;
   int w = buttonWidth - 4;
   int h = DisplayManager::FOOTER_H - 8;
   
-  // Cancel button (left) - same dimensions as PREVIOUS
+  // Cancel button on left third
   int x1 = 0 * buttonWidth + 2;
   display.fillRoundRect(x1, y, w, h, 6, DisplayManager::BUTTON);
   display.drawRoundRect(x1, y, w, h, 6, DisplayManager::TEXT);
-  display.drawText(x1 + 20, y + 10, "CANCEL", DisplayManager::TEXT, 2);
+  display.drawText(x1 + 8, y + 10, "ZRUSIT", DisplayManager::TEXT, 2);
   
-  // Confirm button (right) - same dimensions as NEXT
-  int x2 = 1 * buttonWidth + 2;
+  // Confirm button on right third
+  int x2 = 2 * buttonWidth + 2;
   display.fillRoundRect(x2, y, w, h, 6, DisplayManager::OK);
   display.drawRoundRect(x2, y, w, h, 6, DisplayManager::TEXT);
-  display.drawText(x2 + 15, y + 10, "CONFIRM", DisplayManager::TEXT, 2);
+  display.drawText(x2 + 2, y + 10, "POTVRDIT", DisplayManager::TEXT, 2);
 }
 
 bool UIManager::isModalConfirmButton(int x, int y) const {
   if (!modalShowing) return false;
   
-  const int BUTTON_COUNT = 2;
+  const int BUTTON_COUNT = 3;
   const int buttonWidth = DisplayManager::WIDTH / BUTTON_COUNT;
   int buttonY = DisplayManager::HEIGHT - DisplayManager::FOOTER_H + 4;
   int buttonW = buttonWidth - 4;
   int buttonH = DisplayManager::FOOTER_H - 8;
-  int x2 = 1 * buttonWidth + 2;
+  int x2 = 2 * buttonWidth + 2;
   
   return (x >= x2 && x < x2 + buttonW && y >= buttonY && y < buttonY + buttonH);
 }
@@ -360,7 +369,7 @@ bool UIManager::isModalConfirmButton(int x, int y) const {
 bool UIManager::isModalCancelButton(int x, int y) const {
   if (!modalShowing) return false;
   
-  const int BUTTON_COUNT = 2;
+  const int BUTTON_COUNT = 3;
   const int buttonWidth = DisplayManager::WIDTH / BUTTON_COUNT;
   int buttonY = DisplayManager::HEIGHT - DisplayManager::FOOTER_H + 4;
   int buttonW = buttonWidth - 4;
@@ -375,10 +384,10 @@ void UIManager::showBootScreen() {
   display.clearScreen();
   
   // Draw title
-  display.drawText(60, 80, "Transit Stop Board", DisplayManager::WARN, 2);
+  display.drawText(82, 80, "Odjezdy MHD", DisplayManager::WARN, 2);
   
   // Draw version/subtitle
-  display.drawText(100, 105, "Initializing...", DisplayManager::DIM, 1);
+  display.drawText(110, 105, "Spoustim...", DisplayManager::DIM, 1);
   
   // Draw animated border
   for (int i = 0; i < 8; i++) {
@@ -392,8 +401,8 @@ void UIManager::showWiFiConnecting(int attempt) {
   display.clearScreen();
   
   // Title
-  display.drawText(90, 70, "Connecting", DisplayManager::WARN, 2);
-  display.drawText(60, 95, "to WiFi network...", DisplayManager::TEXT, 1);
+  display.drawText(82, 70, "Pripojovani", DisplayManager::WARN, 2);
+  display.drawText(84, 95, "k WiFi siti...", DisplayManager::TEXT, 1);
   
   // Spinner animation frame
   static int frame = 0;
@@ -406,7 +415,7 @@ void UIManager::showWiFiConnecting(int attempt) {
   display.drawText(145, 155, dots, DisplayManager::DIM, 2);
   
   // Attempt counter
-  String attemptStr = "Attempt " + String(attempt);
+  String attemptStr = "Pokus " + String(attempt);
   display.drawText(115, 180, attemptStr, DisplayManager::DIM, 1);
 }
 
@@ -414,7 +423,7 @@ void UIManager::showStopSwitching(const String& stopName) {
   display.clearScreen();
   
   // Title
-  display.drawText(80, 80, "Switching Stop", DisplayManager::WARN, 2);
+  display.drawText(70, 80, "Menim zastavku", DisplayManager::WARN, 2);
   
   // Stop name
   String name = trimToLength(stopName, 18);

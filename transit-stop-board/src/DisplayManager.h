@@ -77,5 +77,5 @@ private:
   static constexpr int TOUCH_MIN_Y = 200;
   static constexpr int TOUCH_MAX_Y = 3900;
   
-  static constexpr int BUTTON_COUNT = 2;
+  static constexpr int BUTTON_COUNT = 3;
 };

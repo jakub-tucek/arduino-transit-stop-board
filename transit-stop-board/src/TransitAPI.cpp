@@ -30,11 +30,11 @@ bool TransitAPI::isConnected() const {
 }
 
 String TransitAPI::formatTimeAgo(unsigned long fetchMillis) {
-  if (fetchMillis == 0) return "never";
+  if (fetchMillis == 0) return "nikdy";
   unsigned long ago = (millis() - fetchMillis) / 60000;
-  if (ago < 1) return "now";
-  if (ago == 1) return "1m ago";
-  return String(ago) + "m ago";
+  if (ago < 1) return "ted";
+  if (ago == 1) return "pred 1 min";
+  return "pred " + String(ago) + " min";
 }
 
 String TransitAPI::isoToHHMM(const String& iso) {
@@ -69,6 +69,20 @@ bool TransitAPI::headsignMatches(const String& headsign, const char* expected) {
 
 bool TransitAPI::routeMatches(const String& line, const char* expectedLine) {
   return expectedLine != nullptr && expectedLine[0] != '\0' && line.equalsIgnoreCase(expectedLine);
+}
+
+bool TransitAPI::hasRouteFilter(const StopRoute& route) {
+  return (route.line != nullptr && route.line[0] != '\0') ||
+         (route.headsignMatch != nullptr && route.headsignMatch[0] != '\0');
+}
+
+bool TransitAPI::stopUsesRouteFilters(const StopConfig& stop) {
+  for (const StopRoute& route : stop.routes) {
+    if (hasRouteFilter(route)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool TransitAPI::matchesRoute(const Departure& item, const StopRoute& route) {
@@ -131,7 +145,7 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
     return 0;
   }
   
-  url += "&limit=42";  // Fetch 42 items
+  url += "&limit=" + String(maxCount);
   url += "&minutesBefore=0";  // Start from now
   url += "&minutesAfter=" + String(minutesAfter);  // Configurable window (default 180)
   url += "&mode=departures";
@@ -198,6 +212,8 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
   Serial.print("[API] Total departures: ");
   Serial.println(arr.size());
 
+  const bool useRouteFilters = stopUsesRouteFilters(stop);
+
   for (JsonObject d : arr) {
     if (count >= maxCount) break;
 
@@ -221,6 +237,15 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
     
     if (item.minutes.length() == 0) {
       item.minutes = calculateMinutes(timestamp);
+    }
+
+    if (stop.routeType >= 0 && item.routeType != stop.routeType) {
+      continue;
+    }
+
+    if (!useRouteFilters) {
+      outList[count++] = item;
+      continue;
     }
 
     // Check both routes

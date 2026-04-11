@@ -10,7 +10,8 @@ public:
   
   void render(const Departure* departures, int count, 
               const StopConfig& currentStop, int currentPage, int totalPages,
-              bool wifiOk, bool dataOk, int watchedIndex = -1, bool isLoading = false);
+              bool wifiOk, bool dataOk, int watchedIndex = -1, bool isLoading = false,
+              bool canLoadMore = false);
   
   void clear();
   void flashButton(int buttonIndex);
@@ -46,7 +47,7 @@ private:
   void drawStopBar();
   void drawDepartures(const Departure* departures, int count, int pageOffset, int watchedIndex, bool isLoading = false);
   void drawDepartureRow(int index, const Departure& item, bool isWatched);
-  void drawButtons(int currentPage, int totalPages, int departureCount);
+  void drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore);
   void drawWatchedIndicator(int row);
   void drawModal(const char* title, const char* line1, const char* line2, uint16_t accentColor);
 
