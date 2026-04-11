@@ -5,6 +5,83 @@
 #include <ArduinoJson.h>
 #include <time.h>
 
+namespace {
+int64_t daysFromCivil(int year, unsigned month, unsigned day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yearOfEra = static_cast<unsigned>(year - era * 400);
+  const unsigned dayOfYear = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+  const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+  return era * 146097 + static_cast<int>(dayOfEra) - 719468;
+}
+
+bool parseIsoTimestamp(const String& isoTimestamp, time_t& timestamp) {
+  int year, month, day, hour, minute, second;
+  if (sscanf(isoTimestamp.c_str(), "%d-%d-%dT%d:%d:%d",
+             &year, &month, &day, &hour, &minute, &second) != 6) {
+    return false;
+  }
+
+  const char* suffix = isoTimestamp.c_str() + 19;
+  if (*suffix == '.') {
+    suffix++;
+    while (*suffix >= '0' && *suffix <= '9') {
+      suffix++;
+    }
+  }
+
+  if (*suffix == '\0') {
+    struct tm localTm = {
+      .tm_sec = second,
+      .tm_min = minute,
+      .tm_hour = hour,
+      .tm_mday = day,
+      .tm_mon = month - 1,
+      .tm_year = year - 1900,
+      .tm_isdst = -1
+    };
+    timestamp = mktime(&localTm);
+    return timestamp >= 0;
+  }
+
+  int offsetMinutes = 0;
+  if (*suffix == 'Z') {
+    offsetMinutes = 0;
+  } else if (*suffix == '+' || *suffix == '-') {
+    int offsetHours = 0;
+    int offsetMins = 0;
+    if (sscanf(suffix + 1, "%d:%d", &offsetHours, &offsetMins) != 2) {
+      return false;
+    }
+    offsetMinutes = offsetHours * 60 + offsetMins;
+    if (*suffix == '-') {
+      offsetMinutes = -offsetMinutes;
+    }
+  } else {
+    return false;
+  }
+
+  const int64_t epochSeconds = daysFromCivil(year, month, day) * 86400LL +
+                               hour * 3600LL +
+                               minute * 60LL +
+                               second -
+                               offsetMinutes * 60LL;
+  timestamp = static_cast<time_t>(epochSeconds);
+  return true;
+}
+
+String formatLocalClockTime(time_t timestamp) {
+  struct tm timeInfo;
+  if (!localtime_r(&timestamp, &timeInfo)) {
+    return "--:--";
+  }
+
+  char buffer[6];
+  strftime(buffer, sizeof(buffer), "%H:%M", &timeInfo);
+  return String(buffer);
+}
+}
+
 TransitAPI::TransitAPI(const char* token) : apiToken(token), minutesAfter(180) {
 }
 
@@ -38,9 +115,9 @@ String TransitAPI::formatTimeAgo(unsigned long fetchMillis) {
 }
 
 String TransitAPI::isoToHHMM(const String& iso) {
-  int tPos = iso.indexOf('T');
-  if (tPos < 0 || iso.length() < tPos + 6) return "--:--";
-  return iso.substring(tPos + 1, tPos + 6);
+  time_t timestamp;
+  if (!parseIsoTimestamp(iso, timestamp)) return "--:--";
+  return formatLocalClockTime(timestamp);
 }
 
 String TransitAPI::normalizeText(const String& input) {
@@ -92,31 +169,16 @@ bool TransitAPI::matchesRoute(const Departure& item, const StopRoute& route) {
 // Calculate minutes until departure from ISO timestamp
 String TransitAPI::calculateMinutes(const String& isoTimestamp) {
   if (isoTimestamp.length() == 0) return "?";
-  
-  // Parse ISO timestamp: 2025-03-29T19:30:00+01:00 or 2025-03-29T19:30:00Z
-  int year, month, day, hour, minute, second;
-  
-  if (sscanf(isoTimestamp.c_str(), "%d-%d-%dT%d:%d:%d", 
-             &year, &month, &day, &hour, &minute, &second) != 6) {
+
+  time_t depTime;
+  if (!parseIsoTimestamp(isoTimestamp, depTime)) {
     return "?";
   }
-  
+
   // Get current time
   time_t now;
   time(&now);
-  
-  // Create departure time struct
-  struct tm depTm = {
-    .tm_sec = second,
-    .tm_min = minute,
-    .tm_hour = hour,
-    .tm_mday = day,
-    .tm_mon = month - 1,
-    .tm_year = year - 1900
-  };
-  
-  time_t depTime = mktime(&depTm);
-  
+
   // Calculate difference in minutes
   int diffMinutes = (int)((depTime - now) / 60);
   
@@ -124,7 +186,10 @@ String TransitAPI::calculateMinutes(const String& isoTimestamp) {
   return String(diffMinutes);
 }
 
-int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int maxCount) {
+int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int maxCount,
+                                int offset, int* rawCount) {
+  if (rawCount) *rawCount = -1;
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[API] No WiFi");
     return 0;
@@ -146,6 +211,7 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
   }
   
   url += "&limit=" + String(maxCount);
+  url += "&offset=" + String(offset);
   url += "&minutesBefore=0";  // Start from now
   url += "&minutesAfter=" + String(minutesAfter);  // Configurable window (default 180)
   url += "&mode=departures";
@@ -208,6 +274,7 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
 
   int count = 0;
   JsonArray arr = doc["departures"].as<JsonArray>();
+  if (rawCount) *rawCount = arr.size();
   
   Serial.print("[API] Total departures: ");
   Serial.println(arr.size());
@@ -234,6 +301,7 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
     // Extract departure time (HH:MM) from predicted or scheduled timestamp
     String timestamp = predicted.length() ? predicted : scheduled;
     item.departureTime = isoToHHMM(timestamp);
+    parseIsoTimestamp(timestamp, item.departureEpoch);
     
     if (item.minutes.length() == 0) {
       item.minutes = calculateMinutes(timestamp);

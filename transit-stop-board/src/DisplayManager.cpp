@@ -95,6 +95,12 @@ TouchAction DisplayManager::pollTouch() {
     delay(10);
   }
 
+  // Header or stop bar tap = switch stop.
+  if (x >= 6 && x < WIDTH - 6 && y >= 0 && y <= HEADER_H + STOP_BAR_H + 10) {
+    Serial.println("[TOUCH] Action: SWITCH_STOP");
+    return TouchAction::SWITCH_STOP;
+  }
+
   // Departure row tap (content area)
   if (x >= 0 && x < WIDTH && y >= CONTENT_TOP && y < HEIGHT - FOOTER_H) {
     int rowHeight = 23;

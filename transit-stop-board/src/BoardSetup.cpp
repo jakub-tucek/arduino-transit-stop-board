@@ -1,11 +1,32 @@
 #include "BoardSetup.h"
 
+#if RTC_ENABLED
+#include <Wire.h>
+#endif
+
+namespace {
+constexpr const char* kDefaultTimezoneRule = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+
+void configureLocalTimezone() {
+  setenv("TZ", kDefaultTimezoneRule, 1);
+  tzset();
+}
+}
+
 BoardSetup::BoardSetup(const char* wifiSsid, const char* wifiPassword, const char* timeServerUrl)
   : wifiSsid(wifiSsid), wifiPassword(wifiPassword), timeServerUrl(timeServerUrl) {
 }
 
 bool BoardSetup::begin() {
+  configureLocalTimezone();
   Serial.println("[SETUP] Initializing...");
+
+#if RTC_ENABLED
+  beginRtc();
+  if (!isSystemTimeValid()) {
+    syncTimeFromRtc();
+  }
+#endif
   
   // Start WiFi
   WiFi.mode(WIFI_STA);
@@ -101,7 +122,7 @@ bool BoardSetup::tryConnectWiFi() {
 }
 
 void BoardSetup::handleWiFiDisconnect() {
-  timeSynced = false;
+  // Keep the last successfully synced clock running while offline.
 }
 
 bool BoardSetup::doSyncTime() {
@@ -120,6 +141,9 @@ bool BoardSetup::doSyncTime() {
   if (ok) {
     timeSynced = true;
     lastTimeSyncMs = millis();
+#if RTC_ENABLED
+    syncRtcFromSystemTime();
+#endif
   }
   
   return ok;
@@ -173,8 +197,6 @@ bool BoardSetup::syncTimeFromServer() {
     timestamp_ms = atoll(ts_str);
   }
   
-  const char* tz = doc["timezone"] | "CET-1CEST,M3.5.0/2,M10.5.0/3";
-  
   Serial.print(" ts_ms=");
   Serial.print((long)timestamp_ms);
   Serial.print(" raw=");
@@ -199,11 +221,7 @@ bool BoardSetup::syncTimeFromServer() {
     return false;
   }
   
-  setenv("TZ", tz, 1);
-  tzset();
-  
-  struct timeval tv = { .tv_sec = timestamp, .tv_usec = 0 };
-  settimeofday(&tv, NULL);
+  applySystemTime(timestamp);
   
   Serial.print(" OK: ");
   Serial.println(getCurrentTimeStr());
@@ -213,9 +231,8 @@ bool BoardSetup::syncTimeFromServer() {
 bool BoardSetup::syncTimeFromNTP() {
   Serial.print("[TIME] Syncing via NTP...");
   
+  configureLocalTimezone();
   configTime(0, 0, "pool.ntp.org", "time.google.com");
-  setenv("TZ", "CET-1CEST,M3.5.0/2,M10.5.0/3", 1);
-  tzset();
   
   time_t now = 0;
   unsigned long start = millis();
@@ -271,10 +288,26 @@ int BoardSetup::getWiFiRSSI() const {
 
 // Time getters
 bool BoardSetup::isTimeSynced() const {
-  return timeSynced;
+  return timeSynced && isSystemTimeValid();
+}
+
+bool BoardSetup::hasValidTime() const {
+  return isSystemTimeValid();
+}
+
+bool BoardSetup::isRtcAvailable() const {
+#if RTC_ENABLED
+  return rtcAvailable;
+#else
+  return false;
+#endif
 }
 
 String BoardSetup::getCurrentTimeStr() const {
+  if (!isSystemTimeValid()) {
+    return "--:--";
+  }
+
   time_t now;
   time(&now);
   struct tm ti;
@@ -297,8 +330,67 @@ BoardSetupStatus BoardSetup::getStatus() const {
 }
 
 bool BoardSetup::healthcheck() {
-  return isWiFiConnected() && isTimeSynced();
+  return isWiFiConnected() && hasValidTime();
 }
+
+bool BoardSetup::isSystemTimeValid() const {
+  time_t now;
+  time(&now);
+  return now >= MIN_VALID_TIME;
+}
+
+void BoardSetup::applySystemTime(time_t timestamp) {
+  configureLocalTimezone();
+  struct timeval tv = { .tv_sec = timestamp, .tv_usec = 0 };
+  settimeofday(&tv, NULL);
+}
+
+#if RTC_ENABLED
+bool BoardSetup::beginRtc() {
+  Wire.begin();
+  rtcAvailable = rtc.begin();
+  if (!rtcAvailable) {
+    Serial.println("[RTC] DS3231 not found");
+    return false;
+  }
+
+  if (rtc.lostPower()) {
+    Serial.println("[RTC] Lost power, time may be invalid");
+  } else {
+    Serial.println("[RTC] DS3231 ready");
+  }
+  return true;
+}
+
+bool BoardSetup::syncTimeFromRtc() {
+  if (!rtcAvailable) {
+    return false;
+  }
+
+  DateTime now = rtc.now();
+  time_t timestamp = now.unixtime();
+  if (timestamp < MIN_VALID_TIME) {
+    Serial.println("[RTC] Invalid RTC time");
+    return false;
+  }
+
+  applySystemTime(timestamp);
+  Serial.print("[RTC] Time restored: ");
+  Serial.println(getCurrentTimeStr());
+  return true;
+}
+
+void BoardSetup::syncRtcFromSystemTime() {
+  if (!rtcAvailable || !isSystemTimeValid()) {
+    return;
+  }
+
+  time_t now;
+  time(&now);
+  rtc.adjust(DateTime(static_cast<uint32_t>(now)));
+  Serial.println("[RTC] RTC updated from system time");
+}
+#endif
 
 void BoardSetup::onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   switch (event) {

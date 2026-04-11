@@ -17,8 +17,10 @@ public:
   void setMinutesAfter(int minutes);
   int getMinutesAfter() const;
   
-  // Fetch departures from v2 departureboards API
-  int fetchDepartures(const StopConfig& stop, Departure* outList, int maxCount);
+  // Fetch departures from v2 departureboards API.
+  // offset is applied before local route filtering; rawCount receives the API result count.
+  int fetchDepartures(const StopConfig& stop, Departure* outList, int maxCount,
+                      int offset = 0, int* rawCount = nullptr);
   
   // Utility
   static String formatTimeAgo(unsigned long fetchMillis);

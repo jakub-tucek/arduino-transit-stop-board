@@ -11,7 +11,8 @@ public:
   void render(const Departure* departures, int count, 
               const StopConfig& currentStop, int currentPage, int totalPages,
               bool wifiOk, bool dataOk, int watchedIndex = -1, bool isLoading = false,
-              bool canLoadMore = false);
+              bool canLoadMore = false, bool canGoBack = false,
+              bool showOfflineBadge = false, const String& statusText = String());
   
   void clear();
   void flashButton(int buttonIndex);
@@ -43,11 +44,13 @@ private:
   
   bool modalShowing = false;
   
-  void drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, bool isLoading = false);
+  void drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, bool isLoading = false,
+                  bool showOfflineBadge = false, const String& statusText = String());
   void drawStopBar();
+  void drawBusIcon(int x, int y);
   void drawDepartures(const Departure* departures, int count, int pageOffset, int watchedIndex, bool isLoading = false);
   void drawDepartureRow(int index, const Departure& item, bool isWatched);
-  void drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore);
+  void drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore, bool canGoBack);
   void drawWatchedIndicator(int row);
   void drawModal(const char* title, const char* line1, const char* line2, uint16_t accentColor);
 

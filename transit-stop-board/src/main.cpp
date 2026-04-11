@@ -7,6 +7,7 @@
 #include "UIManager.h"
 #include "BoardSetup.h"
 #include "NtfyNotifier.h"
+#include "OfflineCache.h"
 
 #ifndef NTFY_SERVER
 #define NTFY_SERVER ""
@@ -24,6 +25,7 @@ static const int ROWS_PER_PAGE = 7;
 static const int INITIAL_MINUTES_AFTER = 180;
 static const int LOAD_MORE_MINUTES_STEP = 180;
 static const int MAX_MINUTES_AFTER = 4320;
+static const int MAX_BATCH_HISTORY = 24;
 
 // Global objects
 DisplayManager display;
@@ -31,14 +33,19 @@ BoardSetup boardSetup(WIFI_SSID, WIFI_PASSWORD, TIME_SERVER_URL);
 TransitAPI api(GOLEMIO_TOKEN);
 UIManager ui(display);
 NtfyNotifier notifier(NTFY_SERVER, NTFY_TOPIC);
+OfflineCache offlineCache;
 
 // State
 Departure departures[MAX_DEPARTURES];
 int departureCount = 0;
 int currentStopIndex = 0;
 int currentPage = 1;
+int currentApiOffset = 0;
+int lastRawDepartureCount = 0;
 unsigned long lastFetchMs = 0;
 unsigned long lastNtfyUpdateMs = 0;
+int batchOffsetHistory[MAX_BATCH_HISTORY];
+int batchHistoryCount = 0;
 
 // Watch state
 int watchedDepartureIndex = -1;  // -1 = not watching
@@ -48,14 +55,121 @@ unsigned long modalShowTime = 0;
 
 // Track WiFi state to detect reconnections
 static bool wasWifiConnected = false;
+static bool currentDataFromCache = false;
+static time_t currentDataSavedAt = 0;
+
+void syncWatchedDepartureToCurrentBatch();
+
+int normalizeDeparturesForCurrentClock(Departure* list, int count) {
+  if (!boardSetup.hasValidTime()) {
+    return count;
+  }
+
+  time_t now = time(nullptr);
+  int writeIndex = 0;
+  for (int i = 0; i < count; i++) {
+    Departure updated = list[i];
+    if (updated.departureEpoch > 0) {
+      long diffSeconds = static_cast<long>(updated.departureEpoch - now);
+      if (diffSeconds < -60) {
+        continue;
+      }
+
+      int diffMinutes = static_cast<int>(diffSeconds / 60);
+      updated.minutes = diffMinutes < 1 ? "<1" : String(diffMinutes);
+
+      struct tm timeInfo;
+      if (localtime_r(&updated.departureEpoch, &timeInfo)) {
+        char buffer[6];
+        strftime(buffer, sizeof(buffer), "%H:%M", &timeInfo);
+        updated.departureTime = String(buffer);
+      }
+    }
+
+    list[writeIndex++] = updated;
+  }
+
+  return writeIndex;
+}
+
+void applyDepartureDataSource(bool fromCache, time_t savedAt) {
+  currentDataFromCache = fromCache;
+  currentDataSavedAt = savedAt;
+  departureCount = normalizeDeparturesForCurrentClock(departures, departureCount);
+}
+
+bool loadCachedDeparturesForCurrentStop() {
+  int cachedCount = 0;
+  time_t savedAt = 0;
+  if (!offlineCache.loadDepartures(STOPS[currentStopIndex], departures, MAX_DEPARTURES, cachedCount, savedAt)) {
+    return false;
+  }
+
+  departureCount = cachedCount;
+  currentPage = 1;
+  lastRawDepartureCount = departureCount;
+  applyDepartureDataSource(true, savedAt);
+  syncWatchedDepartureToCurrentBatch();
+  Serial.println("[MAIN] Loaded departures from offline cache");
+  return true;
+}
 
 int getTotalPages() {
   if (departureCount == 0) return 1;
   return (departureCount + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 }
 
+bool canGoToPreviousBatch() {
+  return batchHistoryCount > 0;
+}
+
 bool canLoadMoreDepartures() {
-  return api.getMinutesAfter() < MAX_MINUTES_AFTER;
+  return lastRawDepartureCount == MAX_DEPARTURES || api.getMinutesAfter() < MAX_MINUTES_AFTER;
+}
+
+void resetDeparturePaging() {
+  currentApiOffset = 0;
+  lastRawDepartureCount = 0;
+  batchHistoryCount = 0;
+}
+
+void pushBatchOffset(int offset) {
+  if (batchHistoryCount >= MAX_BATCH_HISTORY) {
+    for (int i = 1; i < MAX_BATCH_HISTORY; i++) {
+      batchOffsetHistory[i - 1] = batchOffsetHistory[i];
+    }
+    batchHistoryCount = MAX_BATCH_HISTORY - 1;
+  }
+  batchOffsetHistory[batchHistoryCount++] = offset;
+}
+
+bool popBatchOffset(int& offset) {
+  if (batchHistoryCount == 0) {
+    return false;
+  }
+  offset = batchOffsetHistory[--batchHistoryCount];
+  return true;
+}
+
+void syncWatchedDepartureToCurrentBatch() {
+  watchedDepartureIndex = -1;
+
+  if (!notifier.isWatching()) {
+    return;
+  }
+
+  const String& watchedTripId = notifier.getWatchedConnection().tripId;
+  if (watchedTripId.length() == 0) {
+    return;
+  }
+
+  for (int i = 0; i < departureCount; i++) {
+    if (departures[i].tripId == watchedTripId) {
+      watchedDepartureIndex = i;
+      notifier.refreshWatchedDeparture(departures[i]);
+      return;
+    }
+  }
 }
 
 void renderScreen(bool isLoading = false) {
@@ -71,7 +185,8 @@ void renderScreen(bool isLoading = false) {
   
   ui.render(departures, departureCount, STOPS[currentStopIndex],
             currentPage, getTotalPages(), boardSetup.isWiFiConnected(), 
-            departureCount > 0, watchedAbsIndex, isLoading, canLoadMoreDepartures());
+            departureCount > 0, watchedAbsIndex, isLoading,
+            canLoadMoreDepartures(), canGoToPreviousBatch());
   
   // Show modal if pending
   if (modalShowing && modalPendingRow >= 0) {
@@ -122,11 +237,17 @@ void startWatching(int departureIndex) {
 }
 
 void stopWatching() {
-  if (watchedDepartureIndex >= 0) {
+  if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
     Serial.print("[MAIN] Stopped watching departure: ");
     Serial.print(departures[watchedDepartureIndex].line);
     Serial.print(" to ");
     Serial.println(departures[watchedDepartureIndex].headsign);
+  } else if (notifier.isWatching()) {
+    const WatchedConnection& watched = notifier.getWatchedConnection();
+    Serial.print("[MAIN] Stopped watching departure: ");
+    Serial.print(watched.line);
+    Serial.print(" to ");
+    Serial.println(watched.headsign);
   }
   notifier.stopWatching();
   watchedDepartureIndex = -1;
@@ -183,18 +304,20 @@ void handleWatchSelect(int rowIndex) {
   renderScreen();
 }
 
-void fetchDepartures(bool resetToFirstPage = true) {
+bool fetchDepartures(bool resetToFirstPage = true) {
   if (!boardSetup.isWiFiConnected()) {
     Serial.println("[MAIN] Cannot fetch - WiFi not connected");
-    return;
+    return false;
   }
 
-  String watchedTripId = "";
-  if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
-    watchedTripId = departures[watchedDepartureIndex].tripId;
+  int rawCount = -1;
+  departureCount = api.fetchDepartures(STOPS[currentStopIndex], departures, MAX_DEPARTURES,
+                                       currentApiOffset, &rawCount);
+  if (rawCount < 0) {
+    Serial.println("[MAIN] Fetch failed, keeping current departures");
+    return false;
   }
-
-  departureCount = api.fetchDepartures(STOPS[currentStopIndex], departures, MAX_DEPARTURES);
+  lastRawDepartureCount = rawCount;
   
   if (resetToFirstPage) {
     currentPage = 1;
@@ -202,80 +325,152 @@ void fetchDepartures(bool resetToFirstPage = true) {
     currentPage = min(currentPage, getTotalPages());
   }
   lastFetchMs = millis();
-  
-  // If watching, try to refresh the watched departure data
-  if (watchedTripId.length() > 0) {
-    bool found = false;
-    
-    // Search for the same trip in new data
-    for (int i = 0; i < departureCount; i++) {
-      if (departures[i].tripId == watchedTripId) {
-        watchedDepartureIndex = i;
-        notifier.refreshWatchedDeparture(departures[i]);
-        found = true;
-        break;
-      }
-    }
-    
-    // Trip not found anymore (departed or cancelled)
-    if (!found) {
-      Serial.println("[MAIN] Watched departure no longer in results");
-      stopWatching();
-    }
-  }
+  applyDepartureDataSource(false, boardSetup.hasValidTime() ? time(nullptr) : 0);
+  offlineCache.saveDepartures(STOPS[currentStopIndex], departures, departureCount, currentDataSavedAt);
+
+  syncWatchedDepartureToCurrentBatch();
   
   Serial.print("Fetched ");
   Serial.print(departureCount);
-  Serial.println(" departures");
+  Serial.print(" departures (raw ");
+  Serial.print(lastRawDepartureCount);
+  Serial.print(", offset ");
+  Serial.print(currentApiOffset);
+  Serial.println(")");
+  return true;
 }
 
-void loadMoreDepartures() {
+bool loadPreviousDepartureBatch() {
+  int previousOffset = 0;
+  if (!popBatchOffset(previousOffset)) {
+    return false;
+  }
+
+  currentApiOffset = previousOffset;
+  if (!fetchDepartures()) {
+    return false;
+  }
+  currentPage = getTotalPages();
+  return departureCount > 0;
+}
+
+bool loadMoreDepartures() {
   if (!canLoadMoreDepartures()) {
+    return false;
+  }
+
+  const int previousOffset = currentApiOffset;
+  int previousPage = currentPage;
+  const int previousMinutesAfter = api.getMinutesAfter();
+  int nextOffset = currentApiOffset + lastRawDepartureCount;
+  bool expandedWindow = false;
+
+  while (true) {
+    if (nextOffset > previousOffset || expandedWindow) {
+      currentApiOffset = nextOffset;
+      if (!fetchDepartures()) {
+        break;
+      }
+      expandedWindow = false;
+
+      if (departureCount > 0) {
+        pushBatchOffset(previousOffset);
+        return true;
+      }
+
+      if (lastRawDepartureCount == MAX_DEPARTURES) {
+        nextOffset = currentApiOffset + lastRawDepartureCount;
+        continue;
+      }
+    }
+
+    if (api.getMinutesAfter() >= MAX_MINUTES_AFTER) {
+      break;
+    }
+
+    int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
+    api.setMinutesAfter(nextMinutesAfter);
+    expandedWindow = true;
+
+    Serial.print("[MAIN] Expanding fetch window to ");
+    Serial.print(nextMinutesAfter);
+    Serial.println(" minutes");
+  }
+
+  api.setMinutesAfter(previousMinutesAfter);
+  currentApiOffset = previousOffset;
+  fetchDepartures(false);
+  currentPage = previousPage;
+  return false;
+}
+
+void resetAndFetchDepartures() {
+  resetDeparturePaging();
+  fetchDepartures();
+}
+
+void switchToNextStop() {
+  currentStopIndex = (currentStopIndex + 1) % STOP_COUNT;
+  currentPage = 1;
+  api.setMinutesAfter(INITIAL_MINUTES_AFTER);
+  resetDeparturePaging();
+
+  if (boardSetup.isWiFiConnected()) {
+    renderScreen(true);
+    delay(100);
+    if (fetchDepartures()) {
+      return;
+    }
+  }
+
+  if (!loadCachedDeparturesForCurrentStop()) {
+    departureCount = 0;
+    currentDataFromCache = false;
+    currentDataSavedAt = 0;
+    lastRawDepartureCount = 0;
+  }
+}
+
+void handlePrevPageAction() {
+  if (currentPage > 1) {
+    currentPage--;
     return;
   }
 
-  int previousPage = currentPage;
-  int previousCount = departureCount;
-  int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
-  api.setMinutesAfter(nextMinutesAfter);
-
-  Serial.print("[MAIN] Expanding fetch window to ");
-  Serial.print(nextMinutesAfter);
-  Serial.println(" minutes");
-
-  fetchDepartures(false);
-
-  if (departureCount > previousCount) {
-    currentPage = min(previousPage + 1, getTotalPages());
-  } else {
-    currentPage = min(previousPage, getTotalPages());
+  if (!canGoToPreviousBatch()) {
+    return;
   }
+
+  renderScreen(true);
+  delay(100);
+  loadPreviousDepartureBatch();
+}
+
+void handleNextPageAction() {
+  if (currentPage < getTotalPages()) {
+    currentPage++;
+    return;
+  }
+
+  if (departureCount == 0 || !canLoadMoreDepartures()) {
+    return;
+  }
+
+  renderScreen(true);
+  delay(100);
+  loadMoreDepartures();
 }
 
 void handleAction(TouchAction action) {
   switch (action) {
     case TouchAction::PREV_PAGE:
-      if (currentPage > 1) {
-        currentPage--;
-      }
+      handlePrevPageAction();
       break;
     case TouchAction::NEXT_PAGE:
-      if (currentPage < getTotalPages()) {
-        currentPage++;
-      } else if (departureCount > 0 && canLoadMoreDepartures()) {
-        renderScreen(true);
-        delay(100);
-        loadMoreDepartures();
-      }
+      handleNextPageAction();
       break;
     case TouchAction::SWITCH_STOP:
-      currentStopIndex = (currentStopIndex + 1) % STOP_COUNT;
-      currentPage = 1;
-      api.setMinutesAfter(INITIAL_MINUTES_AFTER);
-      // Show loading indicator while fetching
-      renderScreen(true);
-      delay(100);
-      fetchDepartures();
+      switchToNextStop();
       break;
     case TouchAction::WATCH_SELECT:
       // Handled separately
@@ -379,13 +574,24 @@ void checkSerialInput() {
       Serial.print("Health: ");
       Serial.println(boardSetup.healthcheck() ? "OK" : "Issues");
       Serial.print("Watching: ");
-      if (watchedDepartureIndex >= 0) {
-        Serial.print(departures[watchedDepartureIndex].line);
-        Serial.print(" to ");
-        Serial.println(departures[watchedDepartureIndex].headsign);
+      if (notifier.isWatching()) {
+        const WatchedConnection& watched = notifier.getWatchedConnection();
+        if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
+          Serial.print(departures[watchedDepartureIndex].line);
+          Serial.print(" to ");
+          Serial.println(departures[watchedDepartureIndex].headsign);
+        } else {
+          Serial.print(watched.line);
+          Serial.print(" to ");
+          Serial.println(watched.headsign);
+        }
       } else {
         Serial.println("None");
       }
+      Serial.print("Offset: ");
+      Serial.println(currentApiOffset);
+      Serial.print("Minutes after: ");
+      Serial.println(api.getMinutesAfter());
       Serial.println("==============\n");
       break;
     }
@@ -403,6 +609,12 @@ void checkSerialInput() {
       renderScreen();
       break;
     }
+    case 'r': case 'R': {
+      api.setMinutesAfter(INITIAL_MINUTES_AFTER);
+      resetAndFetchDepartures();
+      renderScreen();
+      break;
+    }
   }
 }
 
@@ -413,19 +625,26 @@ void setup() {
   Serial.println("=== Transit Stop Board ===");
   
   display.begin();
+  offlineCache.begin();
   
   // Show boot animation
   ui.showBootScreen();
   delay(1000);
+
+  loadCachedDeparturesForCurrentStop();
+  if (departureCount > 0) {
+    renderScreen(false);
+  }
   
   // Initialize board setup (WiFi + Time)
   boardSetup.begin();
   notifier.begin();
   api.setMinutesAfter(INITIAL_MINUTES_AFTER);
+  resetDeparturePaging();
   
   // Wait for WiFi with animation
   int wifiAttempt = 0;
-  while (!boardSetup.isWiFiConnected() && wifiAttempt < 30) {
+  while (!boardSetup.isWiFiConnected() && wifiAttempt < 30 && departureCount == 0) {
     ui.showWiFiConnecting(wifiAttempt + 1);
     delay(500);
     wifiAttempt++;
@@ -442,7 +661,7 @@ void setup() {
   }
   
   // Show loading and fetch data
-  renderScreen(true);
+  renderScreen(boardSetup.isWiFiConnected());
   fetchDepartures();
   renderScreen(false);
 }
@@ -471,7 +690,7 @@ void loop() {
 
   // Periodic data refresh
   if (millis() - lastFetchMs > FETCH_INTERVAL_MS) {
-    renderScreen(true);
+    renderScreen(boardSetup.isWiFiConnected());
     fetchDepartures();
     renderScreen(false);
   }
@@ -480,9 +699,11 @@ void loop() {
   if (millis() - lastNtfyUpdateMs > NTFY_UPDATE_INTERVAL_MS) {
     if (notifier.isWatching()) {
       time_t now = time(nullptr);
+      int currentDelaySeconds = notifier.getWatchedConnection().lastDelaySeconds;
       if (watchedDepartureIndex >= 0 && watchedDepartureIndex < departureCount) {
-        notifier.update(now, departures[watchedDepartureIndex].delaySeconds);
+        currentDelaySeconds = departures[watchedDepartureIndex].delaySeconds;
       }
+      notifier.update(now, currentDelaySeconds);
     }
     lastNtfyUpdateMs = millis();
   }

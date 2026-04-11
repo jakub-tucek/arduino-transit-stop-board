@@ -30,19 +30,16 @@ void UIManager::drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, boo
   int timeWidth = timeStr.length() * 12;
   display.drawText(DisplayManager::WIDTH - timeWidth - 10, 7, timeStr, DisplayManager::WARN, 2);
 
-  // Stop name with tap icon on the left
+  // Stop name with a small transit icon on the left
+  drawBusIcon(6, 7);
   String stopName = trimToLength(stop.label, 14);
-  display.drawText(28, 8, stopName, DisplayManager::TEXT, 2);
-
-  // Draw small circle icon to indicate tap-to-switch
-  display.fillCircle(14, 15, 5, DisplayManager::WARN);
-  display.drawCircle(14, 15, 5, DisplayManager::TEXT);
+  display.drawText(30, 8, stopName, DisplayManager::TEXT, 2);
   
   // Draw loading indicator next to stop name when loading
   if (isLoading) {
     static unsigned long lastUpdate = 0;
     static int frame = 0;
-    int spinnerX = 32 + (stopName.length() * 12);
+    int spinnerX = 34 + (stopName.length() * 12);
     if (spinnerX < DisplayManager::WIDTH - 60) {
       // Simple rotating circle animation
       unsigned long now = millis();
@@ -77,6 +74,16 @@ void UIManager::drawStopBar() {
   display.fillRect(6, DisplayManager::HEADER_H + 1, 
                    DisplayManager::WIDTH - 12, 2, 
                    DisplayManager::PANEL);
+}
+
+void UIManager::drawBusIcon(int x, int y) {
+  display.fillRoundRect(x, y, 16, 11, 3, DisplayManager::WARN);
+  display.drawRoundRect(x, y, 16, 11, 3, DisplayManager::TEXT);
+  display.fillRect(x + 3, y + 3, 4, 3, DisplayManager::HEADER);
+  display.fillRect(x + 9, y + 3, 4, 3, DisplayManager::HEADER);
+  display.fillRect(x + 2, y + 7, 12, 1, DisplayManager::HEADER);
+  display.fillCircle(x + 4, y + 12, 2, DisplayManager::TEXT);
+  display.fillCircle(x + 12, y + 12, 2, DisplayManager::TEXT);
 }
 
 void UIManager::drawWatchedIndicator(int row) {
@@ -168,21 +175,19 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
                    DisplayManager::CONTENT_BOTTOM - DisplayManager::CONTENT_TOP, 
                    DisplayManager::BG);
 
-  if (isLoading) {
-    // Show loading message with spinner
-    display.fillRoundRect(10, 70, DisplayManager::WIDTH - 20, 80, 8, DisplayManager::PANEL);
-    display.drawText(100, 95, "Nacitam...", DisplayManager::TEXT, 2);
-    static int spinnerFrame = 0;
-    drawSpinner(200, 105, spinnerFrame++, DisplayManager::LINE);
-    if (spinnerFrame > 7) spinnerFrame = 0;
-    Serial.println("Loading departures...");
-    return;
-  }
-
   if (count == 0) {
-    display.fillRoundRect(10, 70, DisplayManager::WIDTH - 20, 80, 8, DisplayManager::PANEL);
-    display.drawText(28, 95, "Zadne odjezdy", DisplayManager::TEXT, 2);
-    Serial.println("No departures.");
+    if (isLoading) {
+      String loadingLabel = "Nacitam odjezdy";
+      int textX = (DisplayManager::WIDTH - (loadingLabel.length() * 12)) / 2;
+      display.drawText(textX, 95, loadingLabel, DisplayManager::TEXT, 2);
+      static int spinnerFrame = 0;
+      drawSpinner(textX + (loadingLabel.length() * 12) + 18, 105, spinnerFrame++, DisplayManager::LINE);
+      if (spinnerFrame > 7) spinnerFrame = 0;
+      Serial.println("Loading departures...");
+    } else {
+      display.drawText(28, 95, "Zadne odjezdy", DisplayManager::TEXT, 2);
+      Serial.println("No departures.");
+    }
     return;
   }
 
@@ -222,8 +227,8 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
   Serial.println((count + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE);
 }
 
-void UIManager::drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore) {
-  bool hasPrevPage = currentPage > 1;
+void UIManager::drawButtons(int currentPage, int totalPages, int departureCount, bool canLoadMore, bool canGoBack) {
+  bool hasPrevPage = currentPage > 1 || canGoBack;
   bool hasNextPage = currentPage < totalPages || (departureCount > 0 && canLoadMore);
 
   const int BUTTON_COUNT = 3;
@@ -325,12 +330,12 @@ void UIManager::flashButton(int buttonIndex) {
 void UIManager::render(const Departure* departures, int count, 
                        const StopConfig& currentStop, int currentPage, int totalPages,
                        bool wifiOk, bool dataOk, int watchedIndex, bool isLoading,
-                       bool canLoadMore) {
+                       bool canLoadMore, bool canGoBack) {
   clear();
   drawHeader(currentStop, wifiOk, dataOk, isLoading);
   drawStopBar();
   drawDepartures(departures, count, (currentPage - 1) * ROWS_PER_PAGE, watchedIndex, isLoading);
-  drawButtons(currentPage, totalPages, count, canLoadMore);
+  drawButtons(currentPage, totalPages, count, canLoadMore, canGoBack);
 }
 
 void UIManager::drawModalButtons() {

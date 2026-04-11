@@ -1,10 +1,19 @@
 #pragma once
 
+#include "../config.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+
+#ifndef RTC_ENABLED
+#define RTC_ENABLED 0
+#endif
+
+#if RTC_ENABLED
+#include <RTClib.h>
+#endif
 
 struct BoardSetupStatus {
   bool wifiConnected;
@@ -30,8 +39,10 @@ public:
   
   // Time
   bool isTimeSynced() const;
+  bool hasValidTime() const;
   String getCurrentTimeStr() const;
   unsigned long getLastTimeSync() const { return lastTimeSyncMs; }
+  bool isRtcAvailable() const;
   
   // Healthcheck
   BoardSetupStatus getStatus() const;
@@ -61,4 +72,13 @@ private:
   bool syncTimeFromServer();
   bool syncTimeFromNTP();
   bool doSyncTime();
+  bool isSystemTimeValid() const;
+  void applySystemTime(time_t timestamp);
+#if RTC_ENABLED
+  bool beginRtc();
+  bool syncTimeFromRtc();
+  void syncRtcFromSystemTime();
+  RTC_DS3231 rtc;
+  bool rtcAvailable = false;
+#endif
 };
