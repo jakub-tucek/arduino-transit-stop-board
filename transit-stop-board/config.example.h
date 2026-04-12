@@ -35,8 +35,8 @@ struct StopConfig {
 
 constexpr StopConfig STOPS[] = {
   {
-    .label = "Stop A",
-    .cisId = 123,
+    .label = "BB",
+    .cisId = 123, 
     .aswId = "",
     .routeType = 3,  // Bus
     .routes = {
@@ -47,8 +47,8 @@ constexpr StopConfig STOPS[] = {
     }
   },
   {
-    .label = "Stop B",
-    .cisId = 456,
+    .label = "AA",
+    .cisId = 123, 
     .aswId = "",
     .routeType = 3,  // Bus
     .routes = {
