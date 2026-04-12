@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Arduino.h>
-#include "../config.h"
+#include "../config_select.h"
 
 struct Departure {
   String line;

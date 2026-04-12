@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <time.h>
-#include "../config.h"
+#include "../config_select.h"
 #include "Departure.h"
 #include "DisplayManager.h"
 #include "TransitAPI.h"
@@ -37,6 +37,8 @@ OfflineCache offlineCache;
 
 // State
 Departure departures[MAX_DEPARTURES];
+Departure fetchBuffer[MAX_DEPARTURES];
+Departure reloadBuffer[MAX_DEPARTURES];
 int departureCount = 0;
 int currentStopIndex = 0;
 int currentPage = 1;
@@ -59,6 +61,7 @@ static bool currentDataFromCache = false;
 static time_t currentDataSavedAt = 0;
 
 void syncWatchedDepartureToCurrentBatch();
+void renderScreen(bool isLoading = false, bool showLoadingOverlay = true);
 
 int normalizeDeparturesForCurrentClock(Departure* list, int count) {
   if (!boardSetup.hasValidTime()) {
@@ -98,6 +101,14 @@ void applyDepartureDataSource(bool fromCache, time_t savedAt) {
   departureCount = normalizeDeparturesForCurrentClock(departures, departureCount);
 }
 
+void clearCurrentDepartureData() {
+  departureCount = 0;
+  currentDataFromCache = false;
+  currentDataSavedAt = 0;
+  lastRawDepartureCount = 0;
+  watchedDepartureIndex = -1;
+}
+
 bool loadCachedDeparturesForCurrentStop() {
   int cachedCount = 0;
   time_t savedAt = 0;
@@ -114,17 +125,200 @@ bool loadCachedDeparturesForCurrentStop() {
   return true;
 }
 
+String getHeaderStatusText() {
+  if (boardSetup.isWiFiConnected()) {
+    return String("");
+  }
+
+  if (currentDataFromCache && currentDataSavedAt > 0 && boardSetup.hasValidTime()) {
+    long ageMinutes = static_cast<long>((time(nullptr) - currentDataSavedAt) / 60);
+    if (ageMinutes < 1) {
+      return "offline cache ted";
+    }
+    return "offline cache " + String(ageMinutes) + "m";
+  }
+
+  if (currentDataFromCache) {
+    return "offline cache";
+  }
+
+  return departureCount > 0 ? "offline" : "cekam na wifi";
+}
+
 int getTotalPages() {
   if (departureCount == 0) return 1;
   return (departureCount + ROWS_PER_PAGE - 1) / ROWS_PER_PAGE;
 }
 
 bool canGoToPreviousBatch() {
-  return batchHistoryCount > 0;
+  return false;
 }
 
 bool canLoadMoreDepartures() {
   return lastRawDepartureCount == MAX_DEPARTURES || api.getMinutesAfter() < MAX_MINUTES_AFTER;
+}
+
+int targetVisibleCountForPage(int page) {
+  return min(page * ROWS_PER_PAGE, MAX_DEPARTURES);
+}
+
+bool isCurrentPageIncomplete() {
+  if (departureCount == 0) return false;
+  int pageStart = (currentPage - 1) * ROWS_PER_PAGE;
+  return currentPage == getTotalPages() && (departureCount - pageStart) < ROWS_PER_PAGE;
+}
+
+void finalizeLiveDepartureState(bool resetToFirstPage) {
+  if (resetToFirstPage) {
+    currentPage = 1;
+  } else {
+    currentPage = min(currentPage, getTotalPages());
+  }
+
+  lastFetchMs = millis();
+  applyDepartureDataSource(false, boardSetup.hasValidTime() ? time(nullptr) : 0);
+  offlineCache.saveDepartures(STOPS[currentStopIndex], departures, departureCount, currentDataSavedAt);
+  syncWatchedDepartureToCurrentBatch();
+
+  Serial.print("Fetched ");
+  Serial.print(departureCount);
+  Serial.print(" departures (next offset ");
+  Serial.print(currentApiOffset);
+  Serial.print(", raw ");
+  Serial.print(lastRawDepartureCount);
+  Serial.println(")");
+}
+
+bool appendVisibleDeparturesUntil(int minVisibleCount) {
+  if (!boardSetup.isWiFiConnected()) {
+    lastFetchMs = millis();
+    Serial.println("[MAIN] Cannot fetch - WiFi not connected");
+    return false;
+  }
+
+  bool requestSucceeded = false;
+  bool appendedAny = false;
+  minVisibleCount = min(minVisibleCount, MAX_DEPARTURES);
+
+  while (departureCount < minVisibleCount && departureCount < MAX_DEPARTURES) {
+    int requestLimit = MAX_DEPARTURES - departureCount;
+    int rawCount = -1;
+    int fetchedCount = api.fetchDepartures(STOPS[currentStopIndex], fetchBuffer, requestLimit,
+                                           currentApiOffset, &rawCount);
+    if (rawCount < 0) {
+      lastFetchMs = millis();
+      Serial.println("[MAIN] Fetch failed while appending departures");
+      break;
+    }
+
+    requestSucceeded = true;
+    lastRawDepartureCount = rawCount;
+
+    for (int i = 0; i < fetchedCount && departureCount < MAX_DEPARTURES; i++) {
+      departures[departureCount++] = fetchBuffer[i];
+      appendedAny = true;
+    }
+
+    currentApiOffset += rawCount;
+
+    if (departureCount >= minVisibleCount || departureCount >= MAX_DEPARTURES) {
+      break;
+    }
+
+    if (rawCount == requestLimit) {
+      continue;
+    }
+
+    if (api.getMinutesAfter() >= MAX_MINUTES_AFTER) {
+      break;
+    }
+
+    int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
+    api.setMinutesAfter(nextMinutesAfter);
+    Serial.print("[MAIN] Expanding fetch window to ");
+    Serial.print(nextMinutesAfter);
+    Serial.println(" minutes");
+  }
+
+  if (requestSucceeded) {
+    finalizeLiveDepartureState(false);
+  }
+
+  return appendedAny;
+}
+
+bool reloadVisibleDepartures(bool resetToFirstPage = true, int minVisibleCount = ROWS_PER_PAGE) {
+  if (!boardSetup.isWiFiConnected()) {
+    lastFetchMs = millis();
+    Serial.println("[MAIN] Cannot fetch - WiFi not connected");
+    return false;
+  }
+
+  int nextDepartureCount = 0;
+  int nextApiOffset = 0;
+  int nextLastRawCount = 0;
+  bool requestSucceeded = false;
+  minVisibleCount = min(minVisibleCount, MAX_DEPARTURES);
+
+  while (nextDepartureCount < minVisibleCount && nextDepartureCount < MAX_DEPARTURES) {
+    int requestLimit = MAX_DEPARTURES - nextDepartureCount;
+    int rawCount = -1;
+    int fetchedCount = api.fetchDepartures(STOPS[currentStopIndex], fetchBuffer, requestLimit,
+                                           nextApiOffset, &rawCount);
+    if (rawCount < 0) {
+      lastFetchMs = millis();
+      Serial.println("[MAIN] Fetch failed, keeping current departures");
+      return false;
+    }
+
+    requestSucceeded = true;
+    nextLastRawCount = rawCount;
+
+    for (int i = 0; i < fetchedCount && nextDepartureCount < MAX_DEPARTURES; i++) {
+      reloadBuffer[nextDepartureCount++] = fetchBuffer[i];
+    }
+
+    nextApiOffset += rawCount;
+
+    if (nextDepartureCount >= minVisibleCount || nextDepartureCount >= MAX_DEPARTURES) {
+      break;
+    }
+
+    if (rawCount == requestLimit) {
+      continue;
+    }
+
+    if (api.getMinutesAfter() >= MAX_MINUTES_AFTER) {
+      break;
+    }
+
+    int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
+    api.setMinutesAfter(nextMinutesAfter);
+    Serial.print("[MAIN] Expanding fetch window to ");
+    Serial.print(nextMinutesAfter);
+    Serial.println(" minutes");
+  }
+
+  if (!requestSucceeded) {
+    return false;
+  }
+
+  departureCount = nextDepartureCount;
+  for (int i = 0; i < departureCount; i++) {
+    departures[i] = reloadBuffer[i];
+  }
+  currentApiOffset = nextApiOffset;
+  lastRawDepartureCount = nextLastRawCount;
+  finalizeLiveDepartureState(resetToFirstPage);
+  return true;
+}
+
+void prefetchCurrentPageIfNeeded() {
+  if (!boardSetup.isWiFiConnected() || !canLoadMoreDepartures() || !isCurrentPageIncomplete()) {
+    return;
+  }
+
+  appendVisibleDeparturesUntil(targetVisibleCountForPage(currentPage));
 }
 
 void resetDeparturePaging() {
@@ -172,7 +366,7 @@ void syncWatchedDepartureToCurrentBatch() {
   }
 }
 
-void renderScreen(bool isLoading = false) {
+void renderScreen(bool isLoading, bool showLoadingOverlay) {
   // Calculate absolute watched index based on page
   int watchedAbsIndex = -1;
   if (watchedDepartureIndex >= 0) {
@@ -185,8 +379,9 @@ void renderScreen(bool isLoading = false) {
   
   ui.render(departures, departureCount, STOPS[currentStopIndex],
             currentPage, getTotalPages(), boardSetup.isWiFiConnected(), 
-            departureCount > 0, watchedAbsIndex, isLoading,
-            canLoadMoreDepartures(), canGoToPreviousBatch());
+            departureCount > 0, watchedAbsIndex, isLoading, showLoadingOverlay,
+            canLoadMoreDepartures(), canGoToPreviousBatch(),
+            !boardSetup.isWiFiConnected(), getHeaderStatusText());
   
   // Show modal if pending
   if (modalShowing && modalPendingRow >= 0) {
@@ -305,53 +500,14 @@ void handleWatchSelect(int rowIndex) {
 }
 
 bool fetchDepartures(bool resetToFirstPage = true) {
-  if (!boardSetup.isWiFiConnected()) {
-    Serial.println("[MAIN] Cannot fetch - WiFi not connected");
-    return false;
-  }
-
-  int rawCount = -1;
-  departureCount = api.fetchDepartures(STOPS[currentStopIndex], departures, MAX_DEPARTURES,
-                                       currentApiOffset, &rawCount);
-  if (rawCount < 0) {
-    Serial.println("[MAIN] Fetch failed, keeping current departures");
-    return false;
-  }
-  lastRawDepartureCount = rawCount;
-  
-  if (resetToFirstPage) {
-    currentPage = 1;
-  } else {
-    currentPage = min(currentPage, getTotalPages());
-  }
   lastFetchMs = millis();
-  applyDepartureDataSource(false, boardSetup.hasValidTime() ? time(nullptr) : 0);
-  offlineCache.saveDepartures(STOPS[currentStopIndex], departures, departureCount, currentDataSavedAt);
-
-  syncWatchedDepartureToCurrentBatch();
-  
-  Serial.print("Fetched ");
-  Serial.print(departureCount);
-  Serial.print(" departures (raw ");
-  Serial.print(lastRawDepartureCount);
-  Serial.print(", offset ");
-  Serial.print(currentApiOffset);
-  Serial.println(")");
-  return true;
+  api.setMinutesAfter(INITIAL_MINUTES_AFTER);
+  int minVisibleCount = resetToFirstPage ? ROWS_PER_PAGE : targetVisibleCountForPage(currentPage);
+  return reloadVisibleDepartures(resetToFirstPage, minVisibleCount);
 }
 
 bool loadPreviousDepartureBatch() {
-  int previousOffset = 0;
-  if (!popBatchOffset(previousOffset)) {
-    return false;
-  }
-
-  currentApiOffset = previousOffset;
-  if (!fetchDepartures()) {
-    return false;
-  }
-  currentPage = getTotalPages();
-  return departureCount > 0;
+  return false;
 }
 
 bool loadMoreDepartures() {
@@ -359,54 +515,13 @@ bool loadMoreDepartures() {
     return false;
   }
 
-  const int previousOffset = currentApiOffset;
-  int previousPage = currentPage;
-  const int previousMinutesAfter = api.getMinutesAfter();
-  int nextOffset = currentApiOffset + lastRawDepartureCount;
-  bool expandedWindow = false;
-
-  while (true) {
-    if (nextOffset > previousOffset || expandedWindow) {
-      currentApiOffset = nextOffset;
-      if (!fetchDepartures()) {
-        break;
-      }
-      expandedWindow = false;
-
-      if (departureCount > 0) {
-        pushBatchOffset(previousOffset);
-        return true;
-      }
-
-      if (lastRawDepartureCount == MAX_DEPARTURES) {
-        nextOffset = currentApiOffset + lastRawDepartureCount;
-        continue;
-      }
-    }
-
-    if (api.getMinutesAfter() >= MAX_MINUTES_AFTER) {
-      break;
-    }
-
-    int nextMinutesAfter = min(api.getMinutesAfter() + LOAD_MORE_MINUTES_STEP, MAX_MINUTES_AFTER);
-    api.setMinutesAfter(nextMinutesAfter);
-    expandedWindow = true;
-
-    Serial.print("[MAIN] Expanding fetch window to ");
-    Serial.print(nextMinutesAfter);
-    Serial.println(" minutes");
-  }
-
-  api.setMinutesAfter(previousMinutesAfter);
-  currentApiOffset = previousOffset;
-  fetchDepartures(false);
-  currentPage = previousPage;
-  return false;
+  return appendVisibleDeparturesUntil(targetVisibleCountForPage(currentPage + 1));
 }
 
 void resetAndFetchDepartures() {
   resetDeparturePaging();
   fetchDepartures();
+  prefetchCurrentPageIfNeeded();
 }
 
 void switchToNextStop() {
@@ -415,19 +530,17 @@ void switchToNextStop() {
   api.setMinutesAfter(INITIAL_MINUTES_AFTER);
   resetDeparturePaging();
 
+  bool hasCachedData = loadCachedDeparturesForCurrentStop();
+  if (!hasCachedData) {
+    clearCurrentDepartureData();
+  }
+
   if (boardSetup.isWiFiConnected()) {
-    renderScreen(true);
+    renderScreen(true, !hasCachedData);
     delay(100);
     if (fetchDepartures()) {
       return;
     }
-  }
-
-  if (!loadCachedDeparturesForCurrentStop()) {
-    departureCount = 0;
-    currentDataFromCache = false;
-    currentDataSavedAt = 0;
-    lastRawDepartureCount = 0;
   }
 }
 
@@ -436,19 +549,12 @@ void handlePrevPageAction() {
     currentPage--;
     return;
   }
-
-  if (!canGoToPreviousBatch()) {
-    return;
-  }
-
-  renderScreen(true);
-  delay(100);
-  loadPreviousDepartureBatch();
 }
 
 void handleNextPageAction() {
   if (currentPage < getTotalPages()) {
     currentPage++;
+    prefetchCurrentPageIfNeeded();
     return;
   }
 
@@ -456,9 +562,11 @@ void handleNextPageAction() {
     return;
   }
 
-  renderScreen(true);
-  delay(100);
-  loadMoreDepartures();
+  renderScreen(true, false);
+  if (loadMoreDepartures() && currentPage < getTotalPages()) {
+    currentPage++;
+    prefetchCurrentPageIfNeeded();
+  }
 }
 
 void handleAction(TouchAction action) {
@@ -661,8 +769,10 @@ void setup() {
   }
   
   // Show loading and fetch data
-  renderScreen(boardSetup.isWiFiConnected());
-  fetchDepartures();
+  if (boardSetup.isWiFiConnected()) {
+    renderScreen(true, departureCount == 0);
+    fetchDepartures();
+  }
   renderScreen(false);
 }
 
@@ -671,6 +781,10 @@ void loop() {
   boardSetup.maintain();
   
   bool isWifiConnected = boardSetup.isWiFiConnected();
+
+  if (!isWifiConnected && wasWifiConnected) {
+    renderScreen(false);
+  }
   
   // Handle WiFi state change (reconnect detection)
   if (isWifiConnected && !wasWifiConnected) {
@@ -681,18 +795,34 @@ void loop() {
     // Fetch data if time is synced
     if (boardSetup.isTimeSynced()) {
       Serial.println("[MAIN] WiFi reconnected, fetching data...");
-      renderScreen(true);
-      fetchDepartures();
-      renderScreen(false);
+      bool hadData = departureCount > 0;
+      if (!hadData) {
+        renderScreen(true, true);
+      }
+      if (fetchDepartures(false) || !hadData) {
+        renderScreen(false);
+      }
     }
   }
   wasWifiConnected = isWifiConnected;
 
   // Periodic data refresh
   if (millis() - lastFetchMs > FETCH_INTERVAL_MS) {
-    renderScreen(boardSetup.isWiFiConnected());
-    fetchDepartures();
-    renderScreen(false);
+    if (isWifiConnected) {
+      bool hadData = departureCount > 0;
+      if (!hadData) {
+        renderScreen(true, true);
+      }
+      if (fetchDepartures(false) || !hadData) {
+        renderScreen(false);
+      }
+    } else {
+      lastFetchMs = millis();
+      if (currentDataFromCache) {
+        applyDepartureDataSource(true, currentDataSavedAt);
+      }
+      renderScreen(false);
+    }
   }
   
   // Periodic ntfy notifier update (every minute)

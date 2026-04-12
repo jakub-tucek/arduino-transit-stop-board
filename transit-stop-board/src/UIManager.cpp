@@ -2,6 +2,44 @@
 #include "BoardSetup.h"
 #include <Arduino.h>
 
+namespace {
+String getOfflineStatusLine(const String& wifiStatus) {
+  if (wifiStatus == "No SSID") return "sit nenalezena";
+  if (wifiStatus == "Failed") return "pripojeni selhalo";
+  if (wifiStatus == "No WiFi") return "wifi modul neni ready";
+  return "cekam na pripojeni";
+}
+
+String asciiDisplayText(const String& input) {
+  String out = input;
+
+  out.replace("\xC3\xA1", "a"); out.replace("\xC3\xA9", "e"); out.replace("\xC3\xAD", "i");
+  out.replace("\xC3\xB3", "o"); out.replace("\xC3\xBA", "u"); out.replace("\xC3\xBD", "y");
+  out.replace("\xC4\x8D", "c"); out.replace("\xC4\x8F", "d"); out.replace("\xC4\x9B", "e");
+  out.replace("\xC5\x88", "n"); out.replace("\xC5\x99", "r"); out.replace("\xC5\xA1", "s");
+  out.replace("\xC5\xA5", "t"); out.replace("\xC5\xAF", "u"); out.replace("\xC5\xBE", "z");
+  out.replace("\xC3\x81", "A"); out.replace("\xC3\x89", "E"); out.replace("\xC3\x8D", "I");
+  out.replace("\xC3\x93", "O"); out.replace("\xC3\x9A", "U"); out.replace("\xC3\x9D", "Y");
+  out.replace("\xC4\x8C", "C"); out.replace("\xC4\x8E", "D"); out.replace("\xC4\x9A", "E");
+  out.replace("\xC5\x87", "N"); out.replace("\xC5\x98", "R"); out.replace("\xC5\xA0", "S");
+  out.replace("\xC5\xA4", "T"); out.replace("\xC5\xAE", "U"); out.replace("\xC5\xBD", "Z");
+
+  String ascii;
+  ascii.reserve(out.length());
+  for (size_t i = 0; i < out.length(); i++) {
+    unsigned char ch = static_cast<unsigned char>(out[i]);
+    if (ch >= 32 && ch <= 126) {
+      ascii += static_cast<char>(ch);
+    }
+  }
+  return ascii;
+}
+
+int textWidthPx(const String& text, uint8_t size) {
+  return text.length() * 6 * size;
+}
+}
+
 UIManager::UIManager(DisplayManager& disp) : display(disp) {
 }
 
@@ -21,37 +59,44 @@ void UIManager::clear() {
   display.clearScreen();
 }
 
-void UIManager::drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, bool isLoading) {
+void UIManager::drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, bool isLoading,
+                           bool showOfflineBadge, const String& statusText) {
   display.fillRect(0, 0, DisplayManager::WIDTH, DisplayManager::HEADER_H, DisplayManager::HEADER);
 
   // Time in top right corner
   extern BoardSetup boardSetup;
   String timeStr = boardSetup.getCurrentTimeStr();
-  int timeWidth = timeStr.length() * 12;
-  display.drawText(DisplayManager::WIDTH - timeWidth - 10, 7, timeStr, DisplayManager::WARN, 2);
+  if (boardSetup.hasValidTime()) {
+    int timeWidth = timeStr.length() * 12;
+    display.drawText(DisplayManager::WIDTH - timeWidth - 10, 7, timeStr, DisplayManager::WARN, 2);
+  }
 
   // Stop name with a small transit icon on the left
   drawBusIcon(6, 7);
-  String stopName = trimToLength(stop.label, 14);
+  String stopName = trimToLength(asciiDisplayText(stop.label), 14);
   display.drawText(30, 8, stopName, DisplayManager::TEXT, 2);
+
+  if (showOfflineBadge && statusText.length() > 0) {
+    display.drawText(30, 22, asciiDisplayText(statusText), DisplayManager::DIM, 1);
+  }
   
   // Draw loading indicator next to stop name when loading
   if (isLoading) {
     static unsigned long lastUpdate = 0;
     static int frame = 0;
-    int spinnerX = 34 + (stopName.length() * 12);
+    int spinnerX = 40 + (stopName.length() * 12);
     if (spinnerX < DisplayManager::WIDTH - 60) {
-      // Simple rotating circle animation
       unsigned long now = millis();
-      if (now - lastUpdate > 200) {  // Update every 200ms
+      if (now - lastUpdate > 120) {
         frame = (frame + 1) % 4;
         lastUpdate = now;
       }
-      // Draw animated dots - clear area first to prevent leftover characters
-      display.fillRect(spinnerX - 2, 6, 35, 20, DisplayManager::HEADER);
-      String dots = "";
-      for (int i = 0; i <= frame; i++) dots += ".";
-      display.drawText(spinnerX, 8, dots, DisplayManager::WARN, 2);
+
+      display.fillRect(spinnerX - 2, 6, 14, 14, DisplayManager::HEADER);
+      display.fillCircle(spinnerX + 4, 8 + (frame == 3 ? 4 : frame == 1 ? -4 : 0), 2,
+                         frame == 0 || frame == 2 ? DisplayManager::LINE : DisplayManager::WARN);
+      display.fillCircle(spinnerX + (frame == 0 ? 8 : frame == 2 ? 0 : 4), 12, 2,
+                         frame == 1 || frame == 3 ? DisplayManager::LINE : DisplayManager::WARN);
     }
   }
 
@@ -59,7 +104,7 @@ void UIManager::drawHeader(const StopConfig& stop, bool wifiOk, bool dataOk, boo
   Serial.println();
   Serial.println("========================================");
   Serial.print("Stop: ");
-  Serial.println(stop.label);
+  Serial.println(asciiDisplayText(stop.label));
   Serial.print("Current time: ");
   Serial.println(timeStr);
   Serial.print("WiFi: ");
@@ -109,7 +154,6 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   String statusText = item.platform.length() ? item.platform : "";
   uint16_t statusColor = DisplayManager::DIM;
   uint8_t statusSize = 1;
-  int statusX = 280;
   
   // Show delay if present (positive delay = late, negative = early)
   if (item.delaySeconds > 60) {
@@ -117,28 +161,31 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
     statusText = "+" + String(delayMins);
     statusColor = DisplayManager::ERR;  // Red for delay
     statusSize = 2;
-    statusX = 256;
   } else if (item.delaySeconds < -30) {
     int earlyMins = abs(item.delaySeconds) / 60;
     statusText = "-" + String(earlyMins);
     statusColor = DisplayManager::OK;  // Green for early
     statusSize = 2;
-    statusX = 256;
   }
 
   display.fillRect(0, y, DisplayManager::WIDTH, ROW_HEIGHT - 1, rowBg);
-  
+
+  String displayHeadsign = asciiDisplayText(item.headsign);
+  String displayStatus = asciiDisplayText(statusText);
+
   // Line number
   display.drawText(6, y + 5, trimToLength(item.line, 5), DisplayManager::WARN, 2);
-  
-  // Destination uses the larger font, so keep it slightly shorter to preserve spacing.
-  display.drawText(50, y + 4, trimToLength(item.headsign, 12), DisplayManager::TEXT, 2);
-  
+
+  extern BoardSetup boardSetup;
+
   // Minutes until departure or departure time for far departures
   String displayStr;
   bool isFarDeparture = false;
-  
-  if (item.minutes == "<1") {
+
+  if (!boardSetup.hasValidTime() && item.departureTime.length() > 0) {
+    displayStr = item.departureTime;
+    isFarDeparture = true;
+  } else if (item.minutes == "<1") {
     displayStr = "<1m";
   } else {
     int minutes = item.minutes.toInt();
@@ -150,17 +197,32 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
       displayStr = item.minutes + "m";
     }
   }
+
+  int statusWidth = displayStatus.length() > 0 ? textWidthPx(displayStatus, statusSize) : 0;
+  int statusX = DisplayManager::WIDTH - statusWidth - 8;
+  int rightEdge = DisplayManager::WIDTH - 8;
+  if (isWatched) {
+    rightEdge = 286;
+  } else if (displayStatus.length() > 0) {
+    rightEdge = statusX - 8;
+  }
+
+  int timeX = rightEdge - textWidthPx(displayStr, 2);
+  int headsignChars = (timeX - 56) / 12;
+  if (headsignChars < 6) headsignChars = 6;
+
+  display.drawText(50, y + 4, trimToLength(displayHeadsign, headsignChars), DisplayManager::TEXT, 2);
   
   // Draw departure info - time in smaller font if it's a far departure
   if (isFarDeparture) {
-    display.drawText(200, y + 5, displayStr, DisplayManager::LINE, 2);
+    display.drawText(timeX, y + 5, displayStr, DisplayManager::LINE, 2);
   } else {
-    display.drawText(200, y + 5, displayStr, DisplayManager::LINE, 2);
+    display.drawText(timeX, y + 5, displayStr, DisplayManager::LINE, 2);
   }
   
   // Status/platform (far right)
-  if (statusText.length() > 0 && !isWatched) {
-    display.drawText(statusX, y + 5, trimToLength(statusText, 6), statusColor, statusSize);
+  if (displayStatus.length() > 0 && !isWatched) {
+    display.drawText(statusX, y + 5, trimToLength(displayStatus, 6), statusColor, statusSize);
   }
   
   // Draw watched indicator
@@ -169,14 +231,17 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   }
 }
 
-void UIManager::drawDepartures(const Departure* departures, int count, int pageOffset, int watchedIndex, bool isLoading) {
+void UIManager::drawDepartures(const Departure* departures, int count, int pageOffset, int watchedIndex,
+                               bool isLoading, bool showLoadingOverlay) {
   display.fillRect(0, DisplayManager::CONTENT_TOP, 
                    DisplayManager::WIDTH, 
                    DisplayManager::CONTENT_BOTTOM - DisplayManager::CONTENT_TOP, 
                    DisplayManager::BG);
 
+  extern BoardSetup boardSetup;
+
   if (count == 0) {
-    if (isLoading) {
+    if (isLoading && showLoadingOverlay) {
       String loadingLabel = "Nacitam odjezdy";
       int textX = (DisplayManager::WIDTH - (loadingLabel.length() * 12)) / 2;
       display.drawText(textX, 95, loadingLabel, DisplayManager::TEXT, 2);
@@ -184,6 +249,15 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
       drawSpinner(textX + (loadingLabel.length() * 12) + 18, 105, spinnerFrame++, DisplayManager::LINE);
       if (spinnerFrame > 7) spinnerFrame = 0;
       Serial.println("Loading departures...");
+    } else if (!boardSetup.isWiFiConnected()) {
+      String title = "Bez WiFi";
+      String detail = getOfflineStatusLine(boardSetup.getWiFiStatus());
+      int titleX = (DisplayManager::WIDTH - (title.length() * 12)) / 2;
+      int detailX = (DisplayManager::WIDTH - (detail.length() * 6)) / 2;
+      display.drawText(titleX, 88, title, DisplayManager::WARN, 2);
+      display.drawText(detailX, 114, detail, DisplayManager::DIM, 1);
+      Serial.print("WiFi unavailable: ");
+      Serial.println(boardSetup.getWiFiStatus());
     } else {
       display.drawText(28, 95, "Zadne odjezdy", DisplayManager::TEXT, 2);
       Serial.println("No departures.");
@@ -204,7 +278,7 @@ void UIManager::drawDepartures(const Departure* departures, int count, int pageO
     Serial.print(". ");
     Serial.print(departures[depIdx].line);
     Serial.print(" -> ");
-    Serial.print(departures[depIdx].headsign);
+    Serial.print(asciiDisplayText(departures[depIdx].headsign));
     Serial.print(" | ");
     Serial.print(departures[depIdx].minutes);
     Serial.print(" min");
@@ -280,13 +354,17 @@ void UIManager::drawModal(const char* title, const char* line1, const char* line
   int mh = 120;
   display.fillRoundRect(mx, my, mw, mh, 10, DisplayManager::PANEL);
   display.drawRoundRect(mx, my, mw, mh, 10, accentColor);
+
+  String safeTitle = title ? asciiDisplayText(String(title)) : String("");
+  String safeLine1 = line1 ? asciiDisplayText(String(line1)) : String("");
+  String safeLine2 = line2 ? asciiDisplayText(String(line2)) : String("");
   
   // Title
-  display.drawText(mx + 10, my + 10, title, accentColor, 2);
+  display.drawText(mx + 10, my + 10, safeTitle, accentColor, 2);
   
   // Content lines
-  if (line1) display.drawText(mx + 10, my + 40, line1, DisplayManager::TEXT, 1);
-  if (line2) display.drawText(mx + 10, my + 60, line2, DisplayManager::TEXT, 1);
+  if (safeLine1.length() > 0) display.drawText(mx + 10, my + 40, safeLine1, DisplayManager::TEXT, 1);
+  if (safeLine2.length() > 0) display.drawText(mx + 10, my + 60, safeLine2, DisplayManager::TEXT, 1);
   
   // Draw Confirm/Cancel buttons
   drawModalButtons();
@@ -330,11 +408,14 @@ void UIManager::flashButton(int buttonIndex) {
 void UIManager::render(const Departure* departures, int count, 
                        const StopConfig& currentStop, int currentPage, int totalPages,
                        bool wifiOk, bool dataOk, int watchedIndex, bool isLoading,
-                       bool canLoadMore, bool canGoBack) {
+                       bool showLoadingOverlay,
+                       bool canLoadMore, bool canGoBack,
+                       bool showOfflineBadge, const String& statusText) {
   clear();
-  drawHeader(currentStop, wifiOk, dataOk, isLoading);
+  drawHeader(currentStop, wifiOk, dataOk, isLoading, showOfflineBadge, statusText);
   drawStopBar();
-  drawDepartures(departures, count, (currentPage - 1) * ROWS_PER_PAGE, watchedIndex, isLoading);
+  drawDepartures(departures, count, (currentPage - 1) * ROWS_PER_PAGE, watchedIndex,
+                 isLoading, showLoadingOverlay);
   drawButtons(currentPage, totalPages, count, canLoadMore, canGoBack);
 }
 
@@ -431,7 +512,7 @@ void UIManager::showStopSwitching(const String& stopName) {
   display.drawText(70, 80, "Menim zastavku", DisplayManager::WARN, 2);
   
   // Stop name
-  String name = trimToLength(stopName, 18);
+  String name = trimToLength(asciiDisplayText(stopName), 18);
   int nameWidth = name.length() * 12;
   int x = (DisplayManager::WIDTH - nameWidth) / 2;
   display.drawText(x, 110, name, DisplayManager::LINE, 2);

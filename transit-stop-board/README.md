@@ -33,24 +33,34 @@ The UI is designed for landscape mode, so a `240x320` panel is treated as `320x2
 ```text
 transit-stop-board/
   platformio.ini
+  config_select.h
+  config.h
+  config2.h
+  config.example.h
   src/main.cpp
-  include/config.h
-  include/config.example.h
 ```
 
 - `transit-stop-board/src/main.cpp`: current PlatformIO entry point
-- `transit-stop-board/include/config.h`: local secrets and stop config, not committed
-- `transit-stop-board/include/config.example.h`: template config
+- `transit-stop-board/config_select.h`: single place to choose which local config profile is active
+- `transit-stop-board/config.h`: local secrets and primary stop config, not committed
+- `transit-stop-board/config2.h`: optional second local config profile, not committed
+- `transit-stop-board/config.example.h`: template config
 
 ## Configuration
 
 Local secrets are stored in:
 
-`transit-stop-board/include/config.h`
+`transit-stop-board/config.h`
+
+Active config selection happens in:
+
+`transit-stop-board/config_select.h`
+
+Change `ACTIVE_TRANSIT_CONFIG_HEADER` there to switch profiles, for example between `"config.h"` and `"config2.h"`.
 
 Example config is in:
 
-`transit-stop-board/include/config.example.h`
+`transit-stop-board/config.example.h`
 
 The config contains:
 
@@ -98,8 +108,10 @@ Touch calibration values are still generic defaults and may need adjustment for 
 
 ## Notes
 
-- `transit-stop-board/include/config.h` is ignored by git
-- `transit-stop-board/include/config.example.h` is safe to commit
+- `transit-stop-board/config.h` is ignored by git
+- `transit-stop-board/config2.h` is ignored by git
+- `transit-stop-board/config.example.h` is safe to commit
+- `transit-stop-board/config_select.h` is the one place used to switch active config profiles
 - `board = esp32dev` is the current PlatformIO target for the ESP32-DevKitC style board
 - LCD rendering now targets `ILI9341` in landscape mode
 - touch input now targets `XPT2046` with default calibration values that may need tuning
@@ -109,10 +121,12 @@ Touch calibration values are still generic defaults and may need adjustment for 
 1. Open the repo in `VS Code`
 2. Install the `PlatformIO IDE` extension if needed
 3. Open the `transit-stop-board/` folder as the PlatformIO project
-4. Copy `include/config.example.h` to `include/config.h`
-5. Adjust Wi-Fi and Golemio token in `include/config.h`
-6. Connect the ESP32 board
-7. Build and upload with PlatformIO
+4. Copy `config.example.h` to `config.h`
+5. Optionally copy it again to `config2.h` for a second local profile
+6. Adjust Wi-Fi, token, and stops in the local config files
+7. Switch the active profile in `config_select.h`
+8. Connect the ESP32 board
+9. Build and upload with PlatformIO
 
 Typical commands from `transit-stop-board/`:
 
