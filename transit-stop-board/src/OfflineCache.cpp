@@ -5,6 +5,36 @@
 
 namespace {
 constexpr const char* kCacheDir = "/cache";
+
+uint32_t fnv1aUpdate(uint32_t hash, const char* value) {
+  if (!value) return hash;
+  while (*value) {
+    hash ^= static_cast<uint8_t>(*value++);
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+String getStopCacheSuffix(const StopConfig& stop) {
+  uint32_t hash = 2166136261UL;
+  hash = fnv1aUpdate(hash, stop.label);
+  hash = fnv1aUpdate(hash, "|");
+  hash = fnv1aUpdate(hash, stop.aswId);
+
+  for (size_t i = 0; i < sizeof(stop.routes) / sizeof(stop.routes[0]); i++) {
+    const StopRoute& route = stop.routes[i];
+    hash = fnv1aUpdate(hash, "|");
+    hash = fnv1aUpdate(hash, route.platform);
+    hash = fnv1aUpdate(hash, ":");
+    hash = fnv1aUpdate(hash, route.line);
+    hash = fnv1aUpdate(hash, ":");
+    hash = fnv1aUpdate(hash, route.headsignMatch);
+    hash = fnv1aUpdate(hash, ":");
+    hash = fnv1aUpdate(hash, route.headsignDisplay);
+  }
+
+  return String(hash, HEX);
+}
 }
 
 bool OfflineCache::begin() {
@@ -107,11 +137,12 @@ bool OfflineCache::loadDepartures(const StopConfig& stop, Departure* departures,
 }
 
 String OfflineCache::getCachePath(const StopConfig& stop) const {
+  String suffix = "_" + getStopCacheSuffix(stop);
   if (stop.cisId > 0) {
-    return String(kCacheDir) + "/cis_" + String(stop.cisId) + ".json";
+    return String(kCacheDir) + "/cis_" + String(stop.cisId) + suffix + ".json";
   }
 
   String aswId = stop.aswId ? String(stop.aswId) : String("unknown");
   aswId.replace("/", "_");
-  return String(kCacheDir) + "/asw_" + aswId + ".json";
+  return String(kCacheDir) + "/asw_" + aswId + suffix + ".json";
 }

@@ -20,6 +20,7 @@
 // Find CIS IDs at: https://data.gov.cz/datov%C3%A1-sada?iri=https%3A%2F%2Fdata.gov.cz%2Fzdroj%2Fdatov%C3%A9-sady%2Fhttps---api.golemio.cz-api-v2-gtfs-rt-trip-updates%2Fdump_from_datov%C3%A9_sady
 
 struct StopRoute {
+  const char* platform;       // Platform code (optional)
   const char* line;           // Line number (e.g., "197", "B")
   const char* headsignMatch;  // Substring to match in headsign (optional)
   const char* headsignDisplay;// Override display text (optional)
@@ -30,7 +31,7 @@ struct StopConfig {
   int cisId;                  // CIS stop ID (use if available, 0 otherwise)
   const char* aswId;          // ASW stop ID format: "nodeId_stopId" (use if cisId is 0)
   int routeType;              // Route type (-1 for any)
-  StopRoute routes[2];        // Optional primary and fallback route filters
+  StopRoute routes[6];        // Optional platform/route/headsign filters
 };
 
 constexpr StopConfig STOPS[] = {
@@ -42,8 +43,12 @@ constexpr StopConfig STOPS[] = {
     .routes = {
       // Example: leave filters empty to show all departures for this stop.
       // Leave filters empty to show all bus departures for this stop.
-      { .line = "", .headsignMatch = "", .headsignDisplay = "" },
-      { .line = "", .headsignMatch = "", .headsignDisplay = "" }
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" }
     }
   },
   {
@@ -54,8 +59,12 @@ constexpr StopConfig STOPS[] = {
     .routes = {
       // Example stop with multiple lines/platforms.
       // Leave filters empty to show all bus departures for this stop.
-      { .line = "", .headsignMatch = "", .headsignDisplay = "" },
-      { .line = "", .headsignMatch = "", .headsignDisplay = "" }
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" },
+      { .platform = "", .line = "", .headsignMatch = "", .headsignDisplay = "" }
     }
   }
 };

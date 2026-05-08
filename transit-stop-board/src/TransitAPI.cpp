@@ -138,23 +138,29 @@ String TransitAPI::normalizeText(const String& input) {
 }
 
 bool TransitAPI::headsignMatches(const String& headsign, const char* expected) {
-  if (expected == nullptr || expected[0] == '\0') return false;
+  if (expected == nullptr || expected[0] == '\0') return true;
   String normalizedHeadsign = normalizeText(headsign);
   String normalizedExpected = normalizeText(String(expected));
   return normalizedHeadsign.indexOf(normalizedExpected) >= 0;
 }
 
 bool TransitAPI::routeMatches(const String& line, const char* expectedLine) {
-  return expectedLine != nullptr && expectedLine[0] != '\0' && line.equalsIgnoreCase(expectedLine);
+  return expectedLine == nullptr || expectedLine[0] == '\0' || line.equalsIgnoreCase(expectedLine);
+}
+
+bool platformMatches(const String& platform, const char* expectedPlatform) {
+  return expectedPlatform == nullptr || expectedPlatform[0] == '\0' || platform.equalsIgnoreCase(expectedPlatform);
 }
 
 bool TransitAPI::hasRouteFilter(const StopRoute& route) {
-  return (route.line != nullptr && route.line[0] != '\0') ||
+  return (route.platform != nullptr && route.platform[0] != '\0') ||
+         (route.line != nullptr && route.line[0] != '\0') ||
          (route.headsignMatch != nullptr && route.headsignMatch[0] != '\0');
 }
 
 bool TransitAPI::stopUsesRouteFilters(const StopConfig& stop) {
-  for (const StopRoute& route : stop.routes) {
+  for (size_t i = 0; i < sizeof(stop.routes) / sizeof(stop.routes[0]); i++) {
+    const StopRoute& route = stop.routes[i];
     if (hasRouteFilter(route)) {
       return true;
     }
@@ -163,7 +169,10 @@ bool TransitAPI::stopUsesRouteFilters(const StopConfig& stop) {
 }
 
 bool TransitAPI::matchesRoute(const Departure& item, const StopRoute& route) {
-  return routeMatches(item.line, route.line) && headsignMatches(item.headsign, route.headsignMatch);
+  return hasRouteFilter(route) &&
+         platformMatches(item.platform, route.platform) &&
+         routeMatches(item.line, route.line) &&
+         headsignMatches(item.headsign, route.headsignMatch);
 }
 
 // Calculate minutes until departure from ISO timestamp
@@ -316,8 +325,7 @@ int TransitAPI::fetchDepartures(const StopConfig& stop, Departure* outList, int 
       continue;
     }
 
-    // Check both routes
-    for (int i = 0; i < 2; i++) {
+    for (size_t i = 0; i < sizeof(stop.routes) / sizeof(stop.routes[0]); i++) {
       if (matchesRoute(item, stop.routes[i])) {
         if (stop.routes[i].headsignDisplay && stop.routes[i].headsignDisplay[0] != '\0') {
           item.headsign = stop.routes[i].headsignDisplay;
