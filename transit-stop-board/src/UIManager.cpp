@@ -49,6 +49,75 @@ String UIManager::trimToLength(const String& input, size_t maxLen) {
   return input.substring(0, maxLen - 3) + "...";
 }
 
+String UIManager::shortenHeadsign(const String& input, size_t maxLen) {
+  String text = asciiDisplayText(input);
+  if (text.length() <= maxLen) return text;
+  if (maxLen <= 4) return trimToLength(text, maxLen);
+
+  constexpr int MAX_WORDS = 6;
+  String words[MAX_WORDS];
+  size_t visibleLengths[MAX_WORDS] = {0};
+  size_t minLengths[MAX_WORDS] = {0};
+  int wordCount = 0;
+  int start = 0;
+
+  while (start < text.length() && wordCount < MAX_WORDS) {
+    while (start < text.length() && text[start] == ' ') start++;
+    if (start >= text.length()) break;
+
+    int end = text.indexOf(' ', start);
+    if (end < 0) end = text.length();
+    words[wordCount] = text.substring(start, end);
+    visibleLengths[wordCount] = words[wordCount].length();
+    minLengths[wordCount] = words[wordCount].length() > 4 ? 4 : words[wordCount].length();
+    wordCount++;
+    start = end + 1;
+  }
+
+  if (wordCount < 2 || start < text.length()) {
+    return trimToLength(text, maxLen);
+  }
+
+  auto renderedLength = [&]() -> size_t {
+    size_t total = wordCount > 0 ? static_cast<size_t>(wordCount - 1) : 0;
+    for (int i = 0; i < wordCount; i++) {
+      total += visibleLengths[i];
+      if (visibleLengths[i] < words[i].length()) {
+        total += 1;
+      }
+    }
+    return total;
+  };
+
+  while (renderedLength() > maxLen) {
+    int longestWord = -1;
+    for (int i = 0; i < wordCount; i++) {
+      if (visibleLengths[i] > minLengths[i] &&
+          (longestWord < 0 || visibleLengths[i] > visibleLengths[longestWord])) {
+        longestWord = i;
+      }
+    }
+
+    if (longestWord < 0) {
+      return trimToLength(text, maxLen);
+    }
+
+    visibleLengths[longestWord]--;
+  }
+
+  String shortened;
+  for (int i = 0; i < wordCount; i++) {
+    if (i > 0) shortened += ' ';
+    if (visibleLengths[i] < words[i].length()) {
+      shortened += words[i].substring(0, visibleLengths[i]) + ".";
+    } else {
+      shortened += words[i];
+    }
+  }
+
+  return shortened.length() <= maxLen ? shortened : trimToLength(text, maxLen);
+}
+
 String UIManager::isoToHHMM(const String& iso) {
   int tPos = iso.indexOf('T');
   if (tPos < 0 || iso.length() < tPos + 6) return "--:--";
@@ -170,7 +239,6 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
 
   display.fillRect(0, y, DisplayManager::WIDTH, ROW_HEIGHT - 1, rowBg);
 
-  String displayHeadsign = asciiDisplayText(item.headsign);
   String displayStatus = asciiDisplayText(statusText);
 
   // Line number
@@ -211,7 +279,7 @@ void UIManager::drawDepartureRow(int index, const Departure& item, bool isWatche
   int headsignChars = (timeX - 56) / 12;
   if (headsignChars < 6) headsignChars = 6;
 
-  display.drawText(50, y + 4, trimToLength(displayHeadsign, headsignChars), DisplayManager::TEXT, 2);
+  display.drawText(50, y + 4, shortenHeadsign(item.headsign, headsignChars), DisplayManager::TEXT, 2);
   
   // Draw departure info - time in smaller font if it's a far departure
   if (isFarDeparture) {

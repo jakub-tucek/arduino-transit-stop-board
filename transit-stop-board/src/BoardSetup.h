@@ -59,6 +59,7 @@ private:
   bool timeSynced = false;
   
   bool tryConnectWiFi();
+  void debugWiFiEnvironment(wl_status_t failedStatus);
   void handleWiFiDisconnect();
   bool syncTimeFromServer();
   bool syncTimeFromNTP();

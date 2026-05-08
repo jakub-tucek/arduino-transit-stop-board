@@ -57,5 +57,6 @@ private:
   void drawModal(const char* title, const char* line1, const char* line2, uint16_t accentColor);
 
   String trimToLength(const String& input, size_t maxLen);
+  String shortenHeadsign(const String& input, size_t maxLen);
   String isoToHHMM(const String& iso);
 };
